@@ -51,7 +51,7 @@ on:
    workflow_dispatch:
       inputs:
          only:
-            description: "Run one warm job (darwin|win|bun); empty runs all"
+            description: "Run one warm job (darwin|bun); empty runs all"
             type: string
             default: ""
 
@@ -92,29 +92,6 @@ jobs:
               targets: ${{ matrix.target }}
               cache-scope: ${{ matrix.scope }}
               fallback-scope: ${{ matrix.fallback }}
-
-   # Seeds the third-party crate cache the release_binary_hosted win32-arm64
-   # leg restores (Swatinem/rust-cache keeps dependency artifacts and drops
-   # workspace crates, which rebuild anyway on every version bump). Same
-   # runner image, profile, and shared-key as the release leg.
-   warm_win_arm64:
-      if: inputs.only == '' || inputs.only == 'win'
-      name: "Seed win32-arm64 cargo cache"
-      runs-on: windows-11-arm
-      steps:
-         - uses: actions/checkout@v4
-         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-         - run: bun install --frozen-lockfile
-         - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-           with:
-              shared-key: win32-arm64-ci
-              # TEST-BRANCH: ci/release-speedups may save so the release leg
-              # timing can be measured before merge; main-only otherwise.
-              save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci/release-speedups' || github.ref == 'refs/heads/ci/release-speedups-bump' }}
-         - name: Build native addon (cargo)
-           env:
-              OMP_NATIVE_CARGO_PROFILE: ci
-           run: bun scripts/bazel-natives.ts host --dest packages/natives/native
 
    # Produces the shared bun store entry PR jobs restore. bun-install's save
    # half only runs on non-PR events, and main CI jobs run on omp-kata (PVC

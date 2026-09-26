@@ -71,6 +71,7 @@ export const AGGREGATE_TARGETS: Record<string, string[]> = {
 		"linux-musl-x64-baseline",
 		"linux-x64-baseline",
 		"linux-x64-modern",
+		"win32-arm64",
 		"win32-x64-baseline",
 	],
 	"darwin-all": ["darwin-arm64", "darwin-x64-baseline"],
