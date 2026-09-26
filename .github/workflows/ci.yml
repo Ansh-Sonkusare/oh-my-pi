@@ -89,6 +89,9 @@ env:
    # job), so a filegroup addition cannot silently skip both.
    NATIVES_X64_TARGETS: natives-linux-x64-baseline natives-linux-x64-modern
    NATIVES_CROSS_TARGETS: natives-linux-arm64 natives-linux-musl-arm64 natives-linux-musl-x64-baseline natives-win32-x64-baseline
+   # TEST-BRANCH: kata runners are ~1.5-2x slower since reclaim_guest_freed_memory;
+   # widen the per-test ceiling so wall-clock timeouts do not mask timing runs.
+   OMP_TEST_TIMEOUT: "120"
 
 permissions:
    contents: read

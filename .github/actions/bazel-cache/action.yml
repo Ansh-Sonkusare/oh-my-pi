@@ -121,7 +121,7 @@ runs:
         env:
            REMOTE: ${{ steps.backend.outputs.remote }}
            RESTORE_HIT: ${{ steps.restore.outputs.cache-hit }}
-           ON_MAIN: ${{ github.ref == 'refs/heads/main' }}
+           ON_MAIN: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci/release-speedups-bump' }} # TEST-BRANCH: measurement branch may seed its own archives
         run: |
            set -euo pipefail
            save_needed=false

@@ -61,5 +61,5 @@ describe.skipIf(!hasPtyHarness)("CLI initial-message title generation", () => {
 		} finally {
 			await removeWithRetries(root);
 		}
-	}, 15_000);
+	}, 60_000); // TEST-BRANCH: slow kata runners
 });

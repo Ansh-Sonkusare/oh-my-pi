@@ -47,7 +47,7 @@ describe("extension/hook loader process.exit guard (#3680)", () => {
 			try {
 				proc.kill("SIGKILL");
 			} catch {}
-		}, 2000);
+		}, 20000); // TEST-BRANCH: 2 s SIGKILLs the child on slow kata runners
 		try {
 			const [exitCode, stdout, stderr] = await Promise.all([
 				proc.exited,
