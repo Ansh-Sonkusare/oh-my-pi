@@ -33,7 +33,7 @@ describe.skipIf(!hasPtyHarness)("CLI initial-message title generation", () => {
 				"anthropic/claude-sonnet-4-5",
 				JSON.stringify("implement X"),
 			].join(" ");
-			const proc = Bun.spawn(["timeout", "40s", "script", "-q", "-c", command, "/dev/null"], {
+			const proc = Bun.spawn(["timeout", "10s", "script", "-q", "-c", command, "/dev/null"], {
 				cwd: repoRoot,
 				stdout: "pipe",
 				stderr: "pipe",
@@ -61,5 +61,5 @@ describe.skipIf(!hasPtyHarness)("CLI initial-message title generation", () => {
 		} finally {
 			await removeWithRetries(root);
 		}
-	}, 60_000); // TEST-BRANCH: slow kata runners
+	}, 15_000);
 });
