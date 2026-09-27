@@ -10,6 +10,7 @@ import { InternalUrlFilesystem } from "@oh-my-pi/pi-coding-agent/internal-urls/u
 import { FindTool } from "@oh-my-pi/pi-coding-agent/tools/jfind";
 import { runCascade } from "@oh-my-pi/pi-coding-agent/tools/jfind/cascade";
 import { keywordsFromQuery } from "@oh-my-pi/pi-coding-agent/tools/jfind/keywords";
+import { grepIndex } from "@oh-my-pi/pi-coding-agent/tools/jfind/lexical";
 import {
 	mergeHeat,
 	type Passage,
@@ -135,6 +136,25 @@ describe("jfind tree", () => {
 				"",
 			].join("\n"),
 		);
+	});
+});
+
+describe("jfind lexical", () => {
+	it("counts dense matches in every file without truncating the lexical scan", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jfind-lexical-"));
+		try {
+			await Bun.write(path.join(dir, "dense.txt"), "needle needle [rare]\n".repeat(20_000));
+			await Bun.write(path.join(dir, "late.txt"), "rare [rare]\n");
+			const index = await grepIndex(dir, ["needle", "[rare]"], {
+				includeHidden: false,
+				filesystem: urlFs(dir).shellFilesystem(),
+			});
+			expect(index.filesScanned).toBe(2);
+			expect(index.perFileKw.get("dense.txt")).toEqual([20_000, 20_000]);
+			expect(index.perFileKw.get("late.txt")).toEqual([0, 1]);
+		} finally {
+			await removeWithRetries(dir);
+		}
 	});
 });
 
