@@ -1740,6 +1740,53 @@ export interface GlobResult {
  */
 export declare function grep(options: GrepOptions, onMatch?: ((error: Error | null, match: GrepMatch) => void) | undefined | null): Promise<GrepResult>
 
+/**
+ * Count per-keyword matching lines in one bounded scan per file and one walk.
+ *
+ * # Arguments
+ * - `options`: Root path, literal keywords, filesystem, and traversal/cancellation options.
+ *
+ * # Returns
+ * Matching files with counts in input keyword order and the searched-file count.
+ */
+export declare function grepKeywordCounts(options: GrepKeywordCountsOptions): Promise<GrepKeywordCountsResult>
+
+/** Options for counting literal keywords by matching line in one filesystem walk. */
+export interface GrepKeywordCountsOptions {
+  /** Directory or file to search: a host path or an absolute `scheme://` URL. */
+  path: string
+  /** Case-insensitive literal substrings to count independently on each line. */
+  keywords: Array<string>
+  /** Include hidden files (default: true). */
+  hidden?: boolean
+  /** Respect .gitignore files (default: true). */
+  gitignore?: boolean
+  /** Filesystem used for traversal and reads (native when absent). */
+  filesystem?: ShellFilesystem
+  /** Abort signal for cancelling the operation. */
+  signal?: unknown
+  /** Timeout in milliseconds for the entire operation. */
+  timeoutMs?: number
+}
+
+/** Results of one traversal across all requested keywords. */
+export interface GrepKeywordCountsResult {
+  /** One entry per file with at least one keyword match. */
+  matches: Array<GrepKeywordFileCounts>
+  /** Number of readable files searched, including those without matches. */
+  filesSearched: number
+  /** Oversized files whose bounded prefix could not be read, when nonzero. */
+  skippedOversized?: number
+}
+
+/** Per-keyword matching-line counts for one file (keyword input order). */
+export interface GrepKeywordFileCounts {
+  /** Absolute for a file root; relative to the searched directory otherwise. */
+  path: string
+  /** Number of lines containing each keyword, not number of occurrences. */
+  counts: Array<number>
+}
+
 /** A single match in a grep result. */
 export interface GrepMatch {
   /** File path for the match (relative for directory searches). */

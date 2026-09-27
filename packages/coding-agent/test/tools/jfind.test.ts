@@ -140,18 +140,25 @@ describe("jfind tree", () => {
 });
 
 describe("jfind lexical", () => {
-	it("counts dense matches in every file without truncating the lexical scan", async () => {
+	it("counts overlapping literal keywords by line across dense and late files and file roots", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jfind-lexical-"));
 		try {
-			await Bun.write(path.join(dir, "dense.txt"), "needle needle [rare]\n".repeat(20_000));
-			await Bun.write(path.join(dir, "late.txt"), "rare [rare]\n");
-			const index = await grepIndex(dir, ["needle", "[rare]"], {
-				includeHidden: false,
-				filesystem: urlFs(dir).shellFilesystem(),
-			});
+			const late = path.join(dir, "late.txt");
+			await Bun.write(path.join(dir, "dense.txt"), "NEEDLE needle [rare] [rare]\n".repeat(20_000));
+			await Bun.write(late, "rare [rare]\nCAFÉ needle [rare]\n");
+			const keywords = ["NeEdLe", "[RaRe]", "café"];
+			const options = { includeHidden: false, filesystem: urlFs(dir).shellFilesystem() };
+			const index = await grepIndex(dir, keywords, options);
+			expect(index.keywords).toEqual(["needle", "[rare]", "café"]);
 			expect(index.filesScanned).toBe(2);
-			expect(index.perFileKw.get("dense.txt")).toEqual([20_000, 20_000]);
-			expect(index.perFileKw.get("late.txt")).toEqual([0, 1]);
+			expect([...index.perFileKw.entries()].sort()).toEqual([
+				["dense.txt", [20_000, 20_000, 0]],
+				["late.txt", [1, 2, 1]],
+			]);
+
+			const fileIndex = await grepIndex(late, keywords, options);
+			expect(fileIndex.filesScanned).toBe(1);
+			expect([...fileIndex.perFileKw.entries()]).toEqual([[late, [1, 2, 1]]]);
 		} finally {
 			await removeWithRetries(dir);
 		}

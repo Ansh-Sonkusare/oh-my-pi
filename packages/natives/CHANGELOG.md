@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `grepKeywordCounts` for one-pass, per-file keyword counts without retaining matching lines.
+
 ### Changed
 
 - Improved syntax highlighting to use about 5x less memory and run 3-5x faster by compiling grammars with Oniguruma instead of fancy-regex; highlighted output is unchanged.

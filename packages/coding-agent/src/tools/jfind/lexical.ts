@@ -1,5 +1,5 @@
 /**
- * Lexical prior: per-file keyword matching-line counts from native grep,
+ * Lexical prior: per-file keyword matching-line counts from one native scan,
  * turned into IDF weights and a file score before any judgment is spent.
  */
 import * as natives from "@oh-my-pi/pi-natives";
@@ -7,15 +7,10 @@ import * as natives from "@oh-my-pi/pi-natives";
 export interface GrepIndex {
 	/** Lowercased, non-empty keywords; `perFileKw` vectors align with this. */
 	keywords: string[];
-	/** rel file path → per-keyword matching-line counts. */
+	/** Root-relative file path (absolute for a file root) → per-keyword matching-line counts. */
 	perFileKw: Map<string, number[]>;
 	/** Files the walk offered for scanning, including oversized ones. */
 	filesScanned: number;
-}
-
-/** Regex-escape a literal keyword for native grep. */
-function escapeRegex(keyword: string): string {
-	return keyword.replace(/[\\.+*?()|[\]{}^$#&\-~]/g, "\\$&");
 }
 
 export interface GrepIndexOptions {
@@ -27,10 +22,10 @@ export interface GrepIndexOptions {
 }
 
 /**
- * Count lines containing each keyword (case-insensitive) in every file under
- * `root`, keyed like `FileEntry.rel`: root-relative, or a file root's own
- * path. Count mode retains one record per matching file, not every matched
- * line; each keyword scan shares the caller's wall-clock deadline.
+ * Count lines containing each literal keyword (case-insensitive) in every
+ * file under `root`, keyed like `FileEntry.rel`: root-relative, or a file
+ * root's own absolute path. The scan retains one record per matching file,
+ * not every matched line.
  */
 export async function grepIndex(
 	root: string,
@@ -40,29 +35,17 @@ export async function grepIndex(
 	const keywords = rawKeywords.map(keyword => keyword.toLowerCase()).filter(keyword => keyword.length > 0);
 	const index: GrepIndex = { keywords, perFileKw: new Map(), filesScanned: 0 };
 	if (keywords.length === 0) return index;
-	const deadline = options.timeoutMs === undefined ? undefined : performance.now() + options.timeoutMs;
-	for (let k = 0; k < keywords.length; k++) {
-		const result = await natives.grep({
-			pattern: escapeRegex(keywords[k]!),
-			path: root,
-			ignoreCase: true,
-			hidden: options.includeHidden,
-			gitignore: true,
-			mode: natives.GrepOutputMode.Count,
-			filesystem: options.filesystem,
-			signal: options.signal,
-			timeoutMs: deadline === undefined ? undefined : Math.max(1, Math.ceil(deadline - performance.now())),
-		});
-		if (k === 0) index.filesScanned = result.filesSearched + (result.skippedOversized ?? 0);
-		for (const match of result.matches) {
-			let counts = index.perFileKw.get(match.path);
-			if (!counts) {
-				counts = Array.from({ length: keywords.length }, () => 0);
-				index.perFileKw.set(match.path, counts);
-			}
-			counts[k] = match.matchCount ?? 0;
-		}
-	}
+	const result = await natives.grepKeywordCounts({
+		path: root,
+		keywords,
+		hidden: options.includeHidden,
+		gitignore: true,
+		filesystem: options.filesystem,
+		signal: options.signal,
+		timeoutMs: options.timeoutMs,
+	});
+	index.filesScanned = result.filesSearched + (result.skippedOversized ?? 0);
+	for (const match of result.matches) index.perFileKw.set(match.path, match.counts);
 	return index;
 }
 

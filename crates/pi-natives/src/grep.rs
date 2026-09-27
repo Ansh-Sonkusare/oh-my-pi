@@ -142,6 +142,46 @@ pub struct GrepOptions<'env> {
 	pub filesystem:         Option<ShellFilesystem>,
 }
 
+/// Options for counting literal keywords by matching line in one filesystem
+/// walk.
+#[napi(object, object_to_js = false)]
+pub struct GrepKeywordCountsOptions<'env> {
+	/// Directory or file to search: a host path or an absolute `scheme://` URL.
+	pub path:       String,
+	/// Case-insensitive literal substrings to count independently on each line.
+	pub keywords:   Vec<String>,
+	/// Include hidden files (default: true).
+	pub hidden:     Option<bool>,
+	/// Respect .gitignore files (default: true).
+	pub gitignore:  Option<bool>,
+	/// Filesystem used for traversal and reads (native when absent).
+	pub filesystem: Option<ShellFilesystem>,
+	/// Abort signal for cancelling the operation.
+	pub signal:     Option<Unknown<'env>>,
+	/// Timeout in milliseconds for the entire operation.
+	pub timeout_ms: Option<u32>,
+}
+
+/// Per-keyword matching-line counts for one file (keyword input order).
+#[napi(object)]
+pub struct GrepKeywordFileCounts {
+	/// Absolute for a file root; relative to the searched directory otherwise.
+	pub path:   String,
+	/// Number of lines containing each keyword, not number of occurrences.
+	pub counts: Vec<u32>,
+}
+
+/// Results of one traversal across all requested keywords.
+#[napi(object)]
+pub struct GrepKeywordCountsResult {
+	/// One entry per file with at least one keyword match.
+	pub matches:           Vec<GrepKeywordFileCounts>,
+	/// Number of readable files searched, including those without matches.
+	pub files_searched:    u32,
+	/// Oversized files whose bounded prefix could not be read, when nonzero.
+	pub skipped_oversized: Option<u32>,
+}
+
 /// A context line (before or after a match).
 #[derive(Clone, Debug)]
 #[napi(object)]
@@ -426,6 +466,46 @@ impl Sink for MatchCollector {
 			SinkContextKind::Other => {},
 		}
 
+		Ok(true)
+	}
+}
+
+/// Receives each line once from a line-start matcher; it never retains line
+/// content.
+struct KeywordCountSink<'a> {
+	keywords: &'a [String],
+	counts:   &'a mut [u32],
+}
+
+impl Sink for KeywordCountSink<'_> {
+	type Error = io::Error;
+
+	fn matched(
+		&mut self,
+		_searcher: &Searcher,
+		mat: &SinkMatch<'_>,
+	) -> std::result::Result<bool, Self::Error> {
+		let bytes = mat.bytes();
+		if bytes.is_ascii() {
+			for (term, count) in self.keywords.iter().zip(self.counts.iter_mut()) {
+				if !term.is_empty()
+					&& bytes
+						.windows(term.len())
+						.any(|part| part.eq_ignore_ascii_case(term.as_bytes()))
+				{
+					*count += 1;
+				}
+			}
+		} else {
+			// Unicode lowercase can change byte length (and even map a non-ASCII
+			// character to ASCII), so compare the folded line rather than bytes.
+			let line = String::from_utf8_lossy(bytes).to_lowercase();
+			for (term, count) in self.keywords.iter().zip(self.counts.iter_mut()) {
+				if !term.is_empty() && line.contains(term) {
+					*count += 1;
+				}
+			}
+		}
 		Ok(true)
 	}
 }
@@ -2156,6 +2236,90 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 	})
 }
 
+/// Count matching lines for every keyword in a single directory traversal.
+fn grep_keyword_counts_sync(
+	path: String,
+	keywords: Vec<String>,
+	hidden: Option<bool>,
+	gitignore: Option<bool>,
+	fs: BlockingFs,
+	ct: task::CancelToken,
+) -> Result<GrepKeywordCountsResult> {
+	let root = iofs::absolute_search_path(&path)?;
+	let metadata = fs
+		.metadata(&root)
+		.map_err(|err| Error::from_reason(format!("Path not found: {err}")))?;
+	let mut result = GrepKeywordCountsResult {
+		matches:           Vec::new(),
+		files_searched:    0,
+		skipped_oversized: None,
+	};
+	if !metadata.is_file() && !metadata.is_dir() {
+		return Ok(result);
+	}
+
+	let keywords: Vec<String> = keywords
+		.into_iter()
+		.map(|term| term.to_lowercase())
+		.collect();
+	// The zero-width beginning-of-line match drives one sink call per line,
+	// including blank lines, without collecting any grep matches.
+	let matcher = RegexMatcher::new("(?m)^").expect("static line-start matcher is valid");
+	let mut searcher = build_searcher(0, 0, false, false);
+	let mut buffer = Vec::new();
+	let mut counts = vec![0u32; keywords.len()];
+	let mut scan = |file: &Path, result_path: &str, size_hint: Option<u64>| {
+		let read = read_file_bytes_with_size(&fs, file, size_hint, &mut buffer);
+		match read {
+			Ok(ReadFile::Read) => {},
+			Ok(ReadFile::Oversized) => {
+				if !matches!(read_file_prefix(&fs, file, &mut buffer), Ok(ReadFile::Read)) {
+					*result.skipped_oversized.get_or_insert(0) += 1;
+					return;
+				}
+			},
+			Ok(ReadFile::Skipped) | Err(_) => return,
+		}
+		result.files_searched += 1;
+		counts.fill(0);
+		let mut sink = KeywordCountSink { keywords: &keywords, counts: &mut counts };
+		// As in grep, a searcher failure counts as searched with no matches.
+		if searcher.search_slice(&matcher, &buffer, &mut sink).is_ok()
+			&& counts.iter().any(|&count| count != 0)
+		{
+			result
+				.matches
+				.push(GrepKeywordFileCounts { path: result_path.to_owned(), counts: counts.clone() });
+		}
+	};
+
+	ct.heartbeat()?;
+	if metadata.is_file() {
+		scan(&root, root.to_string_lossy().as_ref(), Some(metadata.len()));
+	} else {
+		build_grep_walk_request(
+			&fs,
+			&root,
+			None,
+			hidden.unwrap_or(true),
+			gitignore.unwrap_or(true),
+			true,
+			pi_walker::WalkOrder::Path,
+		)?
+		.for_each_entry_with_heartbeat(
+			|| ct.heartbeat(),
+			|entry| {
+				scan(entry.absolute_path.as_ref(), entry.relative_path, file_size_hint(entry.size));
+				Ok(pi_walker::WalkDecision::Include)
+			},
+			|_| Ok(pi_walker::WalkDecision::Include),
+		)
+		.map_err(iofs::map_walker_error)?;
+	}
+	ct.heartbeat()?;
+	Ok(result)
+}
+
 // ---------------------------------------------------------------------------
 // N-API exports
 // ---------------------------------------------------------------------------
@@ -2291,6 +2455,35 @@ pub fn grep(
 	task::blocking("grep", ct, move |ct| grep_sync(config, on_match.as_ref(), ct))
 }
 
+/// Count per-keyword matching lines in one bounded scan per file and one walk.
+///
+/// # Arguments
+/// - `options`: Root path, literal keywords, filesystem, and
+///   traversal/cancellation options.
+///
+/// # Returns
+/// Matching files with counts in input keyword order and the searched-file
+/// count.
+#[napi]
+pub fn grep_keyword_counts(
+	options: GrepKeywordCountsOptions<'_>,
+) -> task::Promise<GrepKeywordCountsResult> {
+	let GrepKeywordCountsOptions {
+		path,
+		keywords,
+		hidden,
+		gitignore,
+		filesystem,
+		signal,
+		timeout_ms,
+	} = options;
+	let fs = ShellFilesystem::blocking(filesystem);
+	let ct = task::CancelToken::new(timeout_ms, signal);
+	task::blocking("grepKeywordCounts", ct, move |ct| {
+		grep_keyword_counts_sync(path, keywords, hidden, gitignore, fs, ct)
+	})
+}
+
 #[cfg(test)]
 mod tests {
 	#[cfg(unix)]
@@ -2308,7 +2501,7 @@ mod tests {
 	use pi_vfs::BlockingFs;
 
 	#[cfg(unix)]
-	use super::{GrepConfig, GrepOutputMode, grep_sync};
+	use super::{GrepConfig, GrepOutputMode, grep_keyword_counts_sync, grep_sync};
 	use super::{escape_unescaped_parentheses, sanitize_braces};
 	#[cfg(unix)]
 	use crate::task;
@@ -2384,6 +2577,48 @@ mod tests {
 			max_count_per_file: None,
 			filesystem:         BlockingFs::native(),
 		}
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn keyword_counts_count_lines_independently_across_files() {
+		let root = TempDirGuard::new();
+		let dense = "Needle needle ΑΛΦΑ\n".repeat(2_048);
+		write_file(&root.path().join("a.txt"), &dense);
+		write_file(&root.path().join("nested/b.txt"), "NEEDLE\nΑΛΦΑ ΑΛΦΑ\n");
+		write_file(&root.path().join("empty.txt"), "no matching keywords\n");
+		let keywords = vec!["needle".into(), "αλφα".into(), "needle needle".into()];
+		let result = grep_keyword_counts_sync(
+			root.path().to_string_lossy().into_owned(),
+			keywords.clone(),
+			Some(true),
+			Some(false),
+			BlockingFs::native(),
+			task::CancelToken::default(),
+		)
+		.expect("keyword count walk succeeds");
+		assert_eq!(result.files_searched, 3);
+		assert_eq!(result.skipped_oversized, None);
+		assert_eq!(result.matches.len(), 2);
+		assert_eq!(result.matches[0].path, "a.txt");
+		assert_eq!(result.matches[0].counts, [2_048, 2_048, 2_048]);
+		assert_eq!(result.matches[1].path, "nested/b.txt");
+		assert_eq!(result.matches[1].counts, [1, 1, 0]);
+
+		let file = root.path().join("nested/b.txt");
+		let direct = grep_keyword_counts_sync(
+			file.to_string_lossy().into_owned(),
+			keywords,
+			None,
+			None,
+			BlockingFs::native(),
+			task::CancelToken::default(),
+		)
+		.expect("single-file keyword count succeeds");
+		assert_eq!(direct.files_searched, 1);
+		assert_eq!(direct.matches.len(), 1);
+		assert_eq!(direct.matches[0].path, file.to_string_lossy().as_ref());
+		assert_eq!(direct.matches[0].counts, [1, 1, 0]);
 	}
 
 	#[test]
