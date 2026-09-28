@@ -847,6 +847,15 @@ searxng:
   token: SEARXNG_TOKEN
 ```
 
+To permit Perplexity web search to spend an OpenRouter key after direct auth fails (or when explicitly selecting `web/perplexity` without direct auth), opt in:
+
+```yaml
+perplexity:
+  openRouterFallback: true
+```
+
+The default is `false`; `OPENROUTER_API_KEY` alone does not authorize this fallback. An OpenRouter request logs the credential source and masked key suffix before sending it. Other OpenRouter models selected directly are unaffected.
+
 | Key                                 | Type    | Default   | Values / notes                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ----------------------------------- | ------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `providers.webSearchTimeoutSeconds` | number  | `60`      | Per-candidate web-search transport timeout. Values above `300` are capped at five minutes. This is not a whole-chain deadline; the `web` role advances to its next candidate after a timeout.                                                                                                                                                                                                                                                                                                         |

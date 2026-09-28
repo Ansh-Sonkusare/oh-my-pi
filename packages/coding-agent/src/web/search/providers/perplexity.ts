@@ -21,12 +21,14 @@ import { streamOpenAICompletions } from "@oh-my-pi/pi-ai/providers/openai-comple
 import { streamOpenAIResponses } from "@oh-my-pi/pi-ai/providers/openai-responses";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { Model, ModelSpec } from "@oh-my-pi/pi-catalog/types";
-import { $env, readSseJson } from "@oh-my-pi/pi-utils";
+import { $env, logger, readSseJson } from "@oh-my-pi/pi-utils";
+import { isSettingsInitialized, settings } from "../../../config/settings";
 import type { PerplexityRequest, PerplexitySearchResult } from "../../../web/search/types";
 import type { SearchCitation, SearchResponse, SearchSource } from "../types";
 import { SearchProviderError } from "../../../web/search/types";
 import { formatQuery, parseSearchQuery, type QuerySyntax, type StructuredQuery } from "../query";
 import { dateToAgeSeconds } from "../utils";
+import { cfgPerplexityOpenRouterFallback } from "../../settings";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
 import { type ApiConfig, getAvailableAuthMethods } from "./perplexity-auth";
@@ -339,6 +341,8 @@ export interface PerplexitySearchParams {
 	sessionId?: string;
 	/** Anonymous consumer transport is only admitted for an explicit model candidate. */
 	explicit?: boolean;
+	/** Allow a metered OpenRouter credential as a fallback for Perplexity search. */
+	openRouterFallback?: boolean;
 	fetch?: FetchImpl;
 }
 
@@ -913,13 +917,24 @@ export async function searchPerplexity(params: PerplexitySearchParams): Promise<
 	}
 
 	const authMethods = (
-		await getAvailableAuthMethods(params.authStorage, params.sessionId, { signal: params.signal })
+		await getAvailableAuthMethods(params.authStorage, params.sessionId, {
+			signal: params.signal,
+			allowOpenRouterFallback: params.openRouterFallback,
+		})
 	).filter(auth => auth.type !== "anonymous" || params.explicit === true);
 	let lastError: unknown;
 
 	for (const auth of authMethods) {
 		if (auth.type === "api_key") {
 			try {
+				if (auth.provider === "openrouter") {
+					const source = params.authStorage.keys.source("openrouter");
+					logger.info("Perplexity web search using metered OpenRouter fallback", {
+						source: source?.kind ?? "unknown",
+						envVar: source?.envVar,
+						keySuffix: auth.apiKey.length >= 8 ? auth.apiKey.slice(-4) : undefined,
+					});
+				}
 				const result = await callPerplexityApi(auth, request, params.fetch, params.signal, params.timeoutMs);
 				result.authMode = "api_key";
 				return applySourceLimit(result, params.num_results);
@@ -973,21 +988,18 @@ export class PerplexityProvider extends SearchProvider {
 	 * OpenRouter auth is intentionally NOT accepted here: silently using
 	 * OpenRouter's `perplexity/sonar-pro` whenever any OpenRouter key is
 	 * configured surprises users (and bills them) for a path they never
-	 * asked for. The default role chain skips Perplexity in that case and falls
-	 * through to the next candidate. Users who DO want the OpenRouter-backed
-	 * Perplexity path can still opt in with the `web/perplexity` model selector —
-	 * see {@link isExplicitlyAvailable}.
+	 * asked for. The default role chain skips Perplexity in that case.
+	 * Explicit selection admits anonymous search; OpenRouter usage requires
+	 * `perplexity.openRouterFallback: true` even with direct auth configured.
 	 */
 	isAvailable(authStorage: AuthStorage): boolean {
 		return !!$env.PERPLEXITY_COOKIES?.trim() || authStorage.keys.source("perplexity") !== undefined;
 	}
 
 	/**
-	 * Perplexity accepts anonymous browser-style ask requests, and the
-	 * OpenRouter-backed `perplexity/sonar-pro` path is opt-in through
-	 * explicit selection. Keep auto-chain admission credential-gated so a
-	 * configured provider keeps priority over the anonymous/OpenRouter
-	 * fallbacks.
+	 * Perplexity accepts anonymous browser-style ask requests on explicit
+	 * selection. Keep auto-chain admission credential-gated so a
+	 * configured provider keeps priority over the anonymous fallback.
 	 */
 	override isExplicitlyAvailable(_authStorage: AuthStorage): boolean {
 		return true;
@@ -1008,6 +1020,7 @@ export class PerplexityProvider extends SearchProvider {
 			authStorage: params.authStorage,
 			sessionId: params.sessionId,
 			explicit: params.explicit,
+			openRouterFallback: isSettingsInitialized() && cfgPerplexityOpenRouterFallback.get(settings),
 			fetch: params.fetch,
 		});
 	}

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AuthStorage, FetchImpl } from "@oh-my-pi/pi-ai";
+import { logger } from "@oh-my-pi/pi-utils";
 import { PerplexityProvider, searchPerplexity } from "@oh-my-pi/pi-coding-agent/web/search/providers/perplexity";
 import { getAvailableAuthMethods } from "@oh-my-pi/pi-coding-agent/web/search/providers/perplexity-auth";
 
@@ -20,7 +21,8 @@ const apiKeyAuthStorage = {
 		source: (provider: string) => {
 			// Env-backed key (not OAuth) — the direct api-key config must still be emitted.
 			if (provider === "perplexity" && process.env.PERPLEXITY_API_KEY) return { kind: "env", concrete: true };
-			if (provider === "openrouter" && process.env.OPENROUTER_API_KEY) return { kind: "env", concrete: true };
+			if (provider === "openrouter" && process.env.OPENROUTER_API_KEY)
+				return { kind: "env", envVar: "OPENROUTER_API_KEY", concrete: true };
 			return undefined;
 		},
 	},
@@ -175,6 +177,7 @@ describe("Perplexity API-key request shape", () => {
 	});
 	it("falls back to OpenRouter with the selected API-key config after a non-retryable direct Perplexity failure", async () => {
 		process.env.OPENROUTER_API_KEY = "openrouter-test-key";
+		const log = vi.spyOn(logger, "info").mockImplementation(() => {});
 		const urls: string[] = [];
 		const bodies: Record<string, unknown>[] = [];
 		const fetchMock: FetchImpl = async (input, init) => {
@@ -182,13 +185,21 @@ describe("Perplexity API-key request shape", () => {
 			urls.push(url);
 			bodies.push(JSON.parse(init?.body as string));
 			if (url === API_URL) return new Response("direct failed", { status: 400 });
-			if (url === OPENROUTER_API_URL) return sseResponse(baseResponse());
+			if (url === OPENROUTER_API_URL) {
+				expect(log).toHaveBeenCalledWith("Perplexity web search using metered OpenRouter fallback", {
+					source: "env",
+					envVar: "OPENROUTER_API_KEY",
+					keySuffix: "-key",
+				});
+				return sseResponse(baseResponse());
+			}
 			return new Response("not mocked", { status: 500 });
 		};
 
 		const response = await searchPerplexity({
 			query: "quic vs tcp",
 			authStorage: apiKeyAuthStorage,
+			openRouterFallback: true,
 			fetch: fetchMock,
 		});
 
@@ -197,6 +208,21 @@ describe("Perplexity API-key request shape", () => {
 		expect(bodies[1]?.model).toBe("perplexity/sonar-pro");
 		expect(response.authMode).toBe("api_key");
 		expect(response.answer).toBe("answer");
+	});
+	it("does not spend an OpenRouter key when direct Perplexity auth fails without opt-in", async () => {
+		process.env.OPENROUTER_API_KEY = "project-app-key";
+		const urls: string[] = [];
+		const fetchMock: FetchImpl = async input => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+			urls.push(url);
+			if (url === API_URL) return new Response("direct failed", { status: 400 });
+			return sseResponse(baseResponse());
+		};
+
+		await expect(
+			searchPerplexity({ query: "quic vs tcp", authStorage: apiKeyAuthStorage, fetch: fetchMock }),
+		).rejects.toThrow(/direct failed/);
+		expect(urls).toEqual([API_URL]);
 	});
 	it("rejects with the classified upstream error instead of a generic 401 when the only method fails", async () => {
 		delete process.env.OPENROUTER_API_KEY;

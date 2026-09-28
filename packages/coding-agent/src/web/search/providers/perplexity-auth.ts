@@ -33,9 +33,11 @@ export type PerplexityAuth =
 export interface PerplexityAuthOptions {
 	signal?: AbortSignal;
 	forceRefresh?: boolean;
+	/** Permit the metered OpenRouter path when direct Perplexity auth fails. */
+	allowOpenRouterFallback?: boolean;
 }
 
-/** Detect API-key endpoints to try in priority order (Perplexity direct, then OpenRouter). */
+/** Detect authorized API-key endpoints in priority order (Perplexity direct, then OpenRouter). */
 export async function getApiConfigs(
 	authStorage: AuthStorage,
 	sessionId: string | undefined,
@@ -66,17 +68,19 @@ export async function getApiConfigs(
 		}
 	}
 
-	const openrouterKey = await authStorage.keys.get("openrouter", sessionId, options);
-	if (openrouterKey) {
-		configs.push({
-			type: "api_key",
-			apiKey: openrouterKey,
-			provider: "openrouter",
-			chatBaseUrl: OPENROUTER_BASE_URL,
-			responsesBaseUrl: OPENROUTER_BASE_URL,
-			modelPrefix: "perplexity/",
-			useResponses,
-		});
+	if (options?.allowOpenRouterFallback) {
+		const openrouterKey = await authStorage.keys.get("openrouter", sessionId, options);
+		if (openrouterKey) {
+			configs.push({
+				type: "api_key",
+				apiKey: openrouterKey,
+				provider: "openrouter",
+				chatBaseUrl: OPENROUTER_BASE_URL,
+				responsesBaseUrl: OPENROUTER_BASE_URL,
+				modelPrefix: "perplexity/",
+				useResponses,
+			});
+		}
 	}
 
 	return configs;

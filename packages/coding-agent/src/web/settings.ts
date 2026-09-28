@@ -29,6 +29,13 @@ export const cfgExaSearchDelayMs = register({
 	},
 });
 
+/** Explicit permission to use an OpenRouter key for Perplexity search when direct auth fails. */
+export const cfgPerplexityOpenRouterFallback = register({
+	id: "perplexity.openRouterFallback",
+	type: "boolean",
+	default: false,
+});
+
 // SearXNG
 export const cfgSearxngEndpoint = register({
 	id: "searxng.endpoint",

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Perplexity web search no longer charges an ambient OpenRouter key after direct auth fails; its metered fallback now requires `perplexity.openRouterFallback: true` and logs the credential source before use ([#13625](https://github.com/can1357/oh-my-pi/issues/13625)).
+
 ## [18.4.2] - 2026-09-28
 
 ### Added
