@@ -236,23 +236,23 @@ fn structural(role: &str) -> bool {
 	)
 }
 
-fn filter_node(mut node: WalkNode, all: bool) -> Option<WalkNode> {
-	node.children = node
-		.children
-		.into_iter()
-		.filter_map(|child| filter_node(child, all))
-		.collect();
+fn filter_node(mut node: WalkNode, all: bool, siblings: &mut Vec<WalkNode>) {
 	if all {
-		return Some(node);
+		siblings.push(node);
+		return;
 	}
+	let mut children = Vec::new();
+	for child in node.children {
+		filter_node(child, false, &mut children);
+	}
+	node.children = children;
 	let keep_self = interactable(&node.props) || named(&node.props);
 	if !keep_self && node.props.role == "group" && node.children.len() == 1 {
-		return node.children.pop();
-	}
-	if keep_self || (structural(&node.props.role) && !node.children.is_empty()) {
-		Some(node)
+		siblings.append(&mut node.children);
+	} else if keep_self || (structural(&node.props.role) && !node.children.is_empty()) {
+		siblings.push(node);
 	} else {
-		None
+		siblings.append(&mut node.children);
 	}
 }
 
@@ -355,11 +355,13 @@ pub fn snapshot(
 		max_depth: options.max_depth.unwrap_or(24),
 		truncated: false,
 	};
-	let root = walk_raw(backend, root, 0, &mut state)?
-		.and_then(|node| filter_node(node, options.all.unwrap_or(false)));
+	let mut roots = Vec::new();
+	if let Some(root) = walk_raw(backend, root, 0, &mut state)? {
+		filter_node(root, options.all.unwrap_or(false), &mut roots);
+	}
 	let mut text = String::new();
 	let mut node_count = 0;
-	if let Some(root) = root {
+	for root in roots {
 		format_tree(root, 0, window, registry, target, generation, &mut text, &mut node_count);
 	}
 	if state.truncated {
@@ -649,6 +651,31 @@ mod tests {
 			"- window \"Title\" [ref=e1] app=Safari (focused)\n  - button \"Go\" [ref=e2]"
 		);
 		assert_eq!(s.node_count, 2);
+	}
+	#[test]
+	fn unnamed_splitgroup_keeps_named_descendants() {
+		let mut m = Mock {
+			props:    [
+				(1, p("window", Some("Contacts"))),
+				(2, p("splitgroup", None)),
+				(3, p("outline", Some("Contact List"))),
+				(4, p("row", None)),
+				(5, p("cell", None)),
+				(6, p("statictext", Some("Jordan Rivera"))),
+				(7, p("button", Some("mobile"))),
+			]
+			.into(),
+			children: [(1, vec![2]), (2, vec![3, 7]), (3, vec![4]), (4, vec![5]), (5, vec![6])].into(),
+		};
+		m.props.get_mut(&7).unwrap().actions.push("press".into());
+		let s =
+			snapshot(&mut m, &mut AxRegistry::default(), &window(), &AxSnapshotOptions::default())
+				.unwrap();
+		assert!(s.text.contains("outline \"Contact List\""), "{}", s.text);
+		assert!(s.text.contains("Jordan Rivera"), "{}", s.text);
+		assert!(s.text.contains("button \"mobile\""), "{}", s.text);
+		assert!(!s.text.contains("splitgroup"), "{}", s.text);
+		assert_eq!(s.node_count, 6);
 	}
 	#[test]
 	fn description_labels_unnamed_controls_without_changing_raw_title() {
