@@ -167,6 +167,7 @@ export default class Token extends Command {
 			if (provider === "perplexity") {
 				const methods = await getAvailableAuthMethods(authStorage, undefined, {
 					forceRefresh: flags["force-refresh"],
+					includeOpenRouter: true,
 				});
 				const printable = methods.find(m => m.type === "oauth" || m.type === "api_key");
 				if (printable) {

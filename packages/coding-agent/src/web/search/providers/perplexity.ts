@@ -919,7 +919,7 @@ export async function searchPerplexity(params: PerplexitySearchParams): Promise<
 	const authMethods = (
 		await getAvailableAuthMethods(params.authStorage, params.sessionId, {
 			signal: params.signal,
-			allowOpenRouterFallback: params.openRouterFallback,
+			includeOpenRouter: params.openRouterFallback,
 		})
 	).filter(auth => auth.type !== "anonymous" || params.explicit === true);
 	let lastError: unknown;

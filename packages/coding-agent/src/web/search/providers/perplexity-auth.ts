@@ -33,8 +33,12 @@ export type PerplexityAuth =
 export interface PerplexityAuthOptions {
 	signal?: AbortSignal;
 	forceRefresh?: boolean;
-	/** Permit the metered OpenRouter path when direct Perplexity auth fails. */
-	allowOpenRouterFallback?: boolean;
+	/**
+	 * Include an OpenRouter key as a Perplexity-compatible credential. Search passes
+	 * its `perplexity.openRouterFallback` consent; `omp token perplexity` always
+	 * includes it because exporting a key spends nothing.
+	 */
+	includeOpenRouter?: boolean;
 }
 
 /** Detect authorized API-key endpoints in priority order (Perplexity direct, then OpenRouter). */
@@ -68,7 +72,7 @@ export async function getApiConfigs(
 		}
 	}
 
-	if (options?.allowOpenRouterFallback) {
+	if (options?.includeOpenRouter) {
 		const openrouterKey = await authStorage.keys.get("openrouter", sessionId, options);
 		if (openrouterKey) {
 			configs.push({
