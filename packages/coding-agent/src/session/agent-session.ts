@@ -747,6 +747,8 @@ export class AgentSession implements SettingsScope {
 	#resourcesDiscoverStarted = false;
 	/** Contribution from the last `resources_discover` round; `undefined` when it contributed nothing. */
 	#extensionResources: ResolvedExtensionResources | undefined;
+	/** Whether `resources_discover` theme paths are registered; hosts that never render TUI themes (ACP) opt out. */
+	#extensionThemesEnabled = true;
 
 	// Event subscription state
 	#unsubscribeAgent?: () => void;
@@ -5403,6 +5405,8 @@ export class AgentSession implements SettingsScope {
 		this.#releasePowerAssertion();
 		await cleanupEmptyMoveSession(this.sessionManager, this.#movedFromEmptySessionFile);
 		this.#movedFromEmptySessionFile = undefined;
+		// Release this session's `resources_discover` themes; other sessions' contributions stay.
+		if (this.#extensionResources?.themes.length) await setExtensionThemes(this, []);
 		this.#closeAllProviderSessions("dispose");
 		this.#maintenance.cancelSpeculation();
 		this.setHindsightSessionState(undefined);
@@ -5999,7 +6003,28 @@ export class AgentSession implements SettingsScope {
 
 	/** Rediscovers reloadable skills and refreshes prompt metadata. */
 	refreshSkills(): Promise<void> {
-		return this.#tools.refreshSkills();
+		return this.#refreshSkills();
+	}
+
+	/**
+	 * Rediscovers skills, then forwards read/scan failures under extension-contributed
+	 * skill paths to the contributing extension as `resources_discover` errors.
+	 */
+	async #refreshSkills(): Promise<void> {
+		await this.#tools.refreshSkills();
+		const runner = this.#extensionRunner;
+		if (!runner) return;
+		for (const warning of this.#tools.skillWarnings) {
+			if (warning.extensionPath !== undefined) {
+				this.#reportExtensionResourceError(runner, warning.extensionPath, warning.message);
+			}
+		}
+	}
+
+	/** Logs a skipped or unreadable `resources_discover` contribution and reports it as that extension's error. */
+	#reportExtensionResourceError(runner: ExtensionRunner, extensionPath: string, message: string): void {
+		logger.warn("resources_discover path skipped", { extension: extensionPath, message });
+		runner.emitError({ extensionPath, event: "resources_discover", error: message });
 	}
 
 	/**
@@ -6021,7 +6046,7 @@ export class AgentSession implements SettingsScope {
 				});
 				// Resets the capability cache again, rediscovers skills, rebuilds the prompt,
 				// and fires the command-metadata notification after both lists are current.
-				await this.#tools.refreshSkills();
+				await this.#refreshSkills();
 			});
 		this.#skillsAndCommandsRefresh = refresh;
 		return refresh;
@@ -6033,11 +6058,13 @@ export class AgentSession implements SettingsScope {
 	 * `session_start`; later {@link refreshSkillsAndCommands} and {@link reload} calls re-emit
 	 * it with reason `reload`. No-op without `resources_discover` handlers, and in subagent
 	 * sessions: they inherit the parent's skills and prompt templates, so the round (and every
-	 * later reload round) belongs to the top-level session only.
+	 * later reload round) belongs to the top-level session only. Hosts that never render TUI
+	 * themes pass `themes: false` so theme paths are ignored instead of registered.
 	 */
-	discoverExtensionResources(): Promise<void> {
+	discoverExtensionResources(options: { themes?: boolean } = {}): Promise<void> {
 		if (this.#agentKind !== "main") return Promise.resolve();
 		this.#resourcesDiscoverStarted = true;
+		this.#extensionThemesEnabled = options.themes ?? true;
 		return this.#queueExtensionResourcesRound("startup");
 	}
 
@@ -6054,7 +6081,7 @@ export class AgentSession implements SettingsScope {
 				const { skillsChanged, promptsChanged } = await this.#applyExtensionResources(reason);
 				if (skillsChanged) {
 					// Rediscovers skills, rebuilds the prompt, and notifies command-metadata listeners.
-					await this.#tools.refreshSkills();
+					await this.#refreshSkills();
 				} else if (promptsChanged) {
 					this.#notifyCommandMetadataChanged();
 				}
@@ -6065,9 +6092,10 @@ export class AgentSession implements SettingsScope {
 
 	/**
 	 * One `resources_discover` round: emit, resolve against the session cwd, report skipped
-	 * paths as extension errors, and replace the previous contribution — skill paths feed the
-	 * next skill rediscovery, prompt templates merge immediately below disk/host templates
-	 * (first name wins), and a top-level session registers themes process-wide.
+	 * or unreadable paths as extension errors, and replace the previous contribution — skill
+	 * paths feed the next skill rediscovery, prompt templates merge immediately below
+	 * disk/host templates (first name wins), and themes register under this session's
+	 * ownership in the process-wide theme registry (released on dispose).
 	 * Reports whether skill or prompt state needs a refresh.
 	 */
 	async #applyExtensionResources(
@@ -6081,20 +6109,19 @@ export class AgentSession implements SettingsScope {
 		const cwd = this.sessionManager.getCwd();
 		let resolved: ResolvedExtensionResources;
 		try {
-			resolved = await resolveExtensionResources(await runner.emitResourcesDiscover(cwd, reason), cwd);
+			const discovered = await runner.emitResourcesDiscover(cwd, reason);
+			if (!this.#extensionThemesEnabled) discovered.themePaths = [];
+			resolved = await resolveExtensionResources(discovered, cwd);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			logger.warn("resources_discover failed; keeping previous extension resources", { reason, error: message });
 			runner.emitError({ extensionPath: "<resources_discover>", event: "resources_discover", error: message });
 			return { skillsChanged: false, promptsChanged: false };
 		}
+		// A round that outlived dispose() must not re-register this session's resources.
+		if (this.#isDisposed) return { skillsChanged: false, promptsChanged: false };
 		for (const warning of resolved.warnings) {
-			logger.warn("resources_discover path skipped", { extension: warning.extensionPath, message: warning.message });
-			runner.emitError({
-				extensionPath: warning.extensionPath,
-				event: "resources_discover",
-				error: warning.message,
-			});
+			this.#reportExtensionResourceError(runner, warning.extensionPath, warning.message);
 		}
 
 		const hasContribution =
@@ -6107,9 +6134,16 @@ export class AgentSession implements SettingsScope {
 
 		const promptsChanged = resolved.promptPaths.length > 0 || (previous?.promptPaths.length ?? 0) > 0;
 		if (promptsChanged) {
+			const { templates, errors } = await loadPromptTemplatesFromPaths(
+				resolved.promptPaths.map(entry => entry.path),
+			);
+			for (const error of errors) {
+				const owner = resolved.promptPaths.find(entry => entry.path === error.path);
+				if (owner) this.#reportExtensionResourceError(runner, owner.extensionPath, error.message);
+			}
 			const merged = [...this.#basePromptTemplates];
 			const taken = new Set(merged.map(template => template.name));
-			for (const template of await loadPromptTemplatesFromPaths(resolved.promptPaths)) {
+			for (const template of templates) {
 				if (taken.has(template.name)) continue;
 				taken.add(template.name);
 				merged.push(template);
@@ -6117,9 +6151,10 @@ export class AgentSession implements SettingsScope {
 			this.#promptTemplates = merged;
 		}
 
-		// The theme registry is process-global; only top-level sessions run rounds (see discoverExtensionResources).
-		if (resolved.themes.length > 0 || (previous?.themes.length ?? 0) > 0) {
-			setExtensionThemes(resolved.themes);
+		// Keyed by this session so other live top-level sessions' themes stay intact; the
+		// dispose check covers a dispose() that landed while prompt templates loaded.
+		if (!this.#isDisposed && (resolved.themes.length > 0 || (previous?.themes.length ?? 0) > 0)) {
+			await setExtensionThemes(this, resolved.themes);
 		}
 		return { skillsChanged, promptsChanged };
 	}

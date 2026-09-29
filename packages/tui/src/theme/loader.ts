@@ -27,25 +27,65 @@ export function getBuiltinThemes(): Record<string, ThemeJson> {
 
 /**
  * Theme files contributed at runtime by extensions (`resources_discover` `themePaths`),
- * keyed by theme name. They rank below built-in and custom-directory themes.
+ * one name → absolute `.json` path map per owner (a live top-level session). Owners keep
+ * their first-registration order; a name two owners contribute resolves to the earlier owner.
  */
+const extensionThemeOwners = new Map<object, ReadonlyMap<string, string>>();
+
+/** Effective extension themes across every live owner. They rank below built-in and custom-directory themes. */
 let extensionThemeFiles: ReadonlyMap<string, string> = new Map();
 
+/** Source of each theme whose last load came from an extension-contributed file. */
+const loadedExtensionThemes = new Map<string, { path: string; content: string }>();
+
 /**
- * Replace the extension-contributed theme files (name → absolute `.json` path).
- * The first entry for a name wins; an empty list removes every contribution.
+ * Replace `owner`'s extension-contributed theme files (name → absolute `.json` path).
+ * Other owners' contributions are untouched. The first entry for a name wins; an empty
+ * list unregisters the owner.
  */
-export function setExtensionThemeFiles(themes: Iterable<{ name: string; path: string }>): void {
+export function setExtensionThemeFiles(owner: object, themes: Iterable<{ name: string; path: string }>): void {
 	const files = new Map<string, string>();
 	for (const { name, path: filePath } of themes) {
 		if (!files.has(name)) files.set(name, filePath);
 	}
-	extensionThemeFiles = files;
+	if (files.size === 0) extensionThemeOwners.delete(owner);
+	else extensionThemeOwners.set(owner, files);
+
+	const effective = new Map<string, string>();
+	for (const ownerFiles of extensionThemeOwners.values()) {
+		for (const [name, filePath] of ownerFiles) {
+			if (!effective.has(name)) effective.set(name, filePath);
+		}
+	}
+	extensionThemeFiles = effective;
 }
 
-/** Extension-contributed theme files currently registered, keyed by theme name. */
+/** Extension-contributed theme files currently registered across all owners, keyed by theme name. */
 export function getExtensionThemeFiles(): ReadonlyMap<string, string> {
 	return extensionThemeFiles;
+}
+
+/**
+ * Whether theme `name` was last loaded from an extension-contributed file and the file now
+ * registered for it is a different path or has different contents. False for built-in and
+ * custom-directory themes, for dropped contributions, and for unreadable files.
+ */
+export async function isExtensionThemeStale(name: string): Promise<boolean> {
+	const loaded = loadedExtensionThemes.get(name);
+	const registeredPath = extensionThemeFiles.get(name);
+	if (!loaded || registeredPath === undefined) return false;
+	if (registeredPath !== loaded.path) return true;
+	try {
+		return (await Bun.file(registeredPath).text()) !== loaded.content;
+	} catch {
+		return false;
+	}
+}
+
+function parseExtensionThemeJson(name: string, filePath: string, content: string): ThemeJson {
+	const parsed = parseThemeJson(name, content);
+	loadedExtensionThemes.set(name, { path: filePath, content });
+	return parsed;
 }
 
 /** Parse and validate a theme file without registering it; throws the error theme loading would report. */
@@ -150,13 +190,17 @@ export async function loadThemeJson(name: string): Promise<ThemeJson> {
 	const customThemesDir = getCustomThemesDir();
 	const themePath = path.join(customThemesDir, `${name}.json`);
 	try {
-		return parseThemeJson(name, await Bun.file(themePath).text());
+		const parsed = parseThemeJson(name, await Bun.file(themePath).text());
+		loadedExtensionThemes.delete(name);
+		return parsed;
 	} catch (error) {
 		if (!isEnoent(error)) throw error;
 	}
 	const extensionThemePath = extensionThemeFiles.get(name);
 	try {
-		if (extensionThemePath) return parseThemeJson(name, await Bun.file(extensionThemePath).text());
+		if (extensionThemePath) {
+			return parseExtensionThemeJson(name, extensionThemePath, await Bun.file(extensionThemePath).text());
+		}
 	} catch (error) {
 		if (!isEnoent(error)) throw error;
 	}
@@ -171,13 +215,17 @@ export function loadThemeJsonSync(name: string): ThemeJson {
 	}
 	const themePath = path.join(getCustomThemesDir(), `${name}.json`);
 	try {
-		return parseThemeJson(name, fs.readFileSync(themePath, "utf8"));
+		const parsed = parseThemeJson(name, fs.readFileSync(themePath, "utf8"));
+		loadedExtensionThemes.delete(name);
+		return parsed;
 	} catch (error) {
 		if (!isEnoent(error)) throw error;
 	}
 	const extensionThemePath = extensionThemeFiles.get(name);
 	try {
-		if (extensionThemePath) return parseThemeJson(name, fs.readFileSync(extensionThemePath, "utf8"));
+		if (extensionThemePath) {
+			return parseExtensionThemeJson(name, extensionThemePath, fs.readFileSync(extensionThemePath, "utf8"));
+		}
 	} catch (error) {
 		if (!isEnoent(error)) throw error;
 	}

@@ -5,7 +5,9 @@ import * as path from "node:path";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/selector-controller";
 import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-init";
+import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import {
 	type CreateAgentSessionOptions,
 	createAgentSession,
@@ -15,7 +17,7 @@ import {
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { getAvailableThemesWithPaths, getThemeByName, setExtensionThemes } from "@oh-my-pi/pi-tui/theme";
+import { getAvailableThemesWithPaths, getThemeByName } from "@oh-my-pi/pi-tui/theme";
 import { getBuiltinThemes } from "@oh-my-pi/pi-tui/theme/loader";
 import { logger, removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
@@ -38,7 +40,6 @@ describe("extension resources_discover", () => {
 	});
 
 	afterEach(() => {
-		setExtensionThemes([]);
 		for (const dir of tempDirs.splice(0)) removeSyncWithRetries(dir);
 		vi.restoreAllMocks();
 	});
@@ -304,6 +305,243 @@ describe("extension resources_discover", () => {
 
 			expect(errors).toEqual([]);
 			expect(session.skills.map(skill => skill.name)).toContain("ext-skill");
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	/** Available theme name → file path, limited to `names`. */
+	async function themeFiles(...names: string[]): Promise<Record<string, string | undefined>> {
+		const available = await getAvailableThemesWithPaths();
+		return Object.fromEntries(names.map(name => [name, available.find(info => info.name === name)?.path]));
+	}
+
+	it("keeps each session's themes when another live session registers themes or is disposed", async () => {
+		const cwdA = makeProject();
+		const cwdB = makeProject();
+		const darkJson = JSON.stringify(getBuiltinThemes().dark);
+		fs.writeFileSync(path.join(cwdA, "ext", "themes", "shared-theme.json"), darkJson);
+		fs.writeFileSync(path.join(cwdB, "ext", "themes", "shared-theme.json"), darkJson);
+		fs.writeFileSync(path.join(cwdB, "ext", "themes", "b-theme.json"), darkJson);
+		const themesOf = (cwd: string, name: string) => path.join(cwd, "ext", "themes", `${name}.json`);
+		let contributeB = false;
+		const { session: sessionA } = await createAgentSession({
+			...sessionOptions(cwdA),
+			extensions: [pi => pi.on("resources_discover", () => ({ themePaths: ["ext/themes"] }))],
+		});
+		const { session: sessionB } = await createAgentSession({
+			...sessionOptions(cwdB),
+			extensions: [pi => pi.on("resources_discover", () => (contributeB ? { themePaths: ["ext/themes"] } : {}))],
+		});
+		try {
+			await start(sessionA);
+			await start(sessionB);
+			expect(await themeFiles("ext-theme", "shared-theme", "b-theme")).toEqual({
+				"ext-theme": themesOf(cwdA, "ext-theme"),
+				"shared-theme": themesOf(cwdA, "shared-theme"),
+				"b-theme": undefined,
+			});
+
+			contributeB = true;
+			await sessionB.reload();
+			// B's names join; a name both contribute stays with A, which registered first.
+			expect(await themeFiles("ext-theme", "shared-theme", "b-theme")).toEqual({
+				"ext-theme": themesOf(cwdA, "ext-theme"),
+				"shared-theme": themesOf(cwdA, "shared-theme"),
+				"b-theme": themesOf(cwdB, "b-theme"),
+			});
+
+			await sessionA.dispose();
+			expect(await themeFiles("ext-theme", "shared-theme", "b-theme")).toEqual({
+				"ext-theme": themesOf(cwdB, "ext-theme"),
+				"shared-theme": themesOf(cwdB, "shared-theme"),
+				"b-theme": themesOf(cwdB, "b-theme"),
+			});
+
+			await sessionB.dispose();
+			expect(await themeFiles("ext-theme", "shared-theme", "b-theme")).toEqual({
+				"ext-theme": undefined,
+				"shared-theme": undefined,
+				"b-theme": undefined,
+			});
+		} finally {
+			await sessionA.dispose();
+			await sessionB.dispose();
+		}
+	});
+
+	it("ignores theme paths when the host opts out of themes (ACP)", async () => {
+		const cwd = makeProject();
+		const { session } = await createAgentSession({
+			...sessionOptions(cwd),
+			extensions: [
+				pi =>
+					pi.on("resources_discover", () => ({
+						promptPaths: ["ext/prompts"],
+						themePaths: ["ext/themes", "missing-themes"],
+					})),
+			],
+		});
+		try {
+			const runner = session.extensionRunner;
+			if (!runner) throw new Error("expected extension runner");
+			const errors: string[] = [];
+			runner.onError(error => {
+				errors.push(error.error);
+			});
+
+			await session.discoverExtensionResources({ themes: false });
+
+			expect(session.promptTemplates.map(template => template.name)).toContain("ext-prompt");
+			expect(await themeFiles("ext-theme")).toEqual({ "ext-theme": undefined });
+			// Theme paths are not even resolved, so the missing one is not reported.
+			expect(errors).toEqual([]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("tells contributed directories from files by their type, not their suffix", async () => {
+		const cwd = makeProject();
+		const odd = path.join(cwd, "odd");
+		fs.mkdirSync(path.join(odd, "prompts.md"), { recursive: true });
+		fs.writeFileSync(path.join(odd, "prompts.md", "dir-prompt.md"), "Prompt under a directory named like a file.\n");
+		fs.mkdirSync(path.join(odd, "themes.json"), { recursive: true });
+		fs.writeFileSync(path.join(odd, "themes.json", "dir-theme.json"), JSON.stringify(getBuiltinThemes().dark));
+		fs.mkdirSync(path.join(odd, "SKILL.md", "dir-skill"), { recursive: true });
+		fs.writeFileSync(
+			path.join(odd, "SKILL.md", "dir-skill", "SKILL.md"),
+			"---\nname: dir-skill\ndescription: Skill under a directory named SKILL.md.\n---\nbody\n",
+		);
+		const { session } = await createAgentSession({
+			...sessionOptions(cwd),
+			extensions: [
+				pi =>
+					pi.on("resources_discover", () => ({
+						skillPaths: ["odd/SKILL.md"],
+						promptPaths: ["odd/prompts.md"],
+						themePaths: ["odd/themes.json"],
+					})),
+			],
+		});
+		try {
+			const errors = await start(session);
+
+			expect(errors).toEqual([]);
+			expect(session.skills.map(skill => skill.name)).toContain("dir-skill");
+			expect(session.promptTemplates.map(template => template.name)).toContain("dir-prompt");
+			expect(await themeFiles("dir-theme")).toEqual({
+				"dir-theme": path.join(odd, "themes.json", "dir-theme.json"),
+			});
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("skips BigInt and circular entries without dropping the rest of the round", async () => {
+		const cwd = makeProject();
+		const circular: Record<string, unknown> = { name: "loop" };
+		circular.self = circular;
+		const { session } = await createAgentSession({
+			...sessionOptions(cwd),
+			extensions: [
+				pi =>
+					pi.on("resources_discover", () => ({
+						promptPaths: [10n, circular, "ext/prompts"] as unknown as string[],
+					})),
+			],
+		});
+		try {
+			const errors = await start(session);
+
+			expect(errors).toEqual([
+				"resources_discover: Ignoring promptPaths entry 10n: expected a non-empty path string",
+				`resources_discover: Ignoring promptPaths entry { name: "loop", self: [Circular] }: expected a non-empty path string`,
+			]);
+			expect(session.promptTemplates.map(template => template.name)).toContain("ext-prompt");
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("reports unreadable contributed skill and prompt files as errors of the contributing extension", async () => {
+		const cwd = makeProject();
+		fs.mkdirSync(path.join(cwd, "ext", "skills", "bad-skill"), { recursive: true });
+		fs.writeFileSync(
+			path.join(cwd, "ext", "skills", "bad-skill", "SKILL.md"),
+			"---\nname: bad/skill\ndescription: Name with a path separator.\n---\nbody\n",
+		);
+		const lockedPrompt = path.join(cwd, "ext", "prompts", "locked.md");
+		fs.writeFileSync(lockedPrompt, "Locked prompt.\n");
+		const realFile = Bun.file.bind(Bun);
+		vi.spyOn(Bun, "file").mockImplementation((source, options) => {
+			const file = realFile(source as string, options);
+			if (source === lockedPrompt) {
+				file.text = () => Promise.reject(new Error("EACCES: permission denied"));
+			}
+			return file;
+		});
+		const { session } = await createAgentSession({
+			...sessionOptions(cwd),
+			extensions: [
+				pi => pi.on("resources_discover", () => ({ skillPaths: ["ext/skills"], promptPaths: ["ext/prompts"] })),
+			],
+		});
+		try {
+			const runner = session.extensionRunner;
+			if (!runner) throw new Error("expected extension runner");
+			const reported: Array<{ extensionPath: string; event: string; error: string }> = [];
+			runner.onError(error => {
+				reported.push({ extensionPath: error.extensionPath, event: error.event, error: error.error });
+			});
+
+			await initializeExtensions(session, { reportSendError: vi.fn(), reportRuntimeError: vi.fn() });
+
+			const [extensionPath] = runner.getExtensionPaths();
+			expect(reported).toEqual([
+				{
+					extensionPath,
+					event: "resources_discover",
+					error: expect.stringContaining(`Failed to load prompt template ${lockedPrompt}: Error: EACCES`),
+				},
+				{
+					extensionPath,
+					event: "resources_discover",
+					error: expect.stringContaining('Skill name "bad/skill" contains a path separator'),
+				},
+			]);
+			expect(session.skills.map(skill => skill.name)).toContain("ext-skill");
+			expect(session.promptTemplates.map(template => template.name)).toEqual(expect.arrayContaining(["ext-prompt"]));
+			expect(session.promptTemplates.map(template => template.name)).not.toContain("locked");
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("re-emits resources_discover when a plugin is toggled in /settings", async () => {
+		const cwd = makeProject();
+		const reasons: string[] = [];
+		const { session } = await createAgentSession({
+			...sessionOptions(cwd),
+			extensions: [
+				pi =>
+					pi.on("resources_discover", event => {
+						reasons.push(event.reason);
+						return {};
+					}),
+			],
+		});
+		try {
+			await start(session);
+			const ctx = {
+				session,
+				sessionManager: session.sessionManager,
+				ui: { requestRender: vi.fn() },
+			} as unknown as InteractiveModeContext;
+
+			await new SelectorController(ctx).reloadAfterPluginToggle();
+
+			expect(reasons).toEqual(["startup", "reload"]);
 		} finally {
 			await session.dispose();
 		}

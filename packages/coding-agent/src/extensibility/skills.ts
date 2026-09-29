@@ -53,6 +53,16 @@ export interface Skill {
 export interface SkillWarning {
 	skillPath: string;
 	message: string;
+	/** Extension whose `resources_discover` path produced this read/scan failure. */
+	extensionPath?: string;
+}
+
+/** A skill path contributed by an extension `resources_discover` handler. */
+export interface ExtensionSkillPath {
+	/** Absolute skills root, single skill directory, or `SKILL.md` file. */
+	path: string;
+	/** Contributing extension, used to attribute scan failures. */
+	extensionPath: string;
 }
 
 export interface LoadSkillsResult {
@@ -282,12 +292,12 @@ export interface LoadSkillsOptions extends SkillsSettings {
 	 */
 	extensionRoots?: EffectiveExtensionRoots;
 	/**
-	 * Absolute skill paths contributed by extension `resources_discover` handlers:
-	 * a skills root, a single skill directory, or a `SKILL.md` file. They rank
-	 * below every configured source (first name wins) and still honor
-	 * ignore/include/disabled filters.
+	 * Skill paths contributed by extension `resources_discover` handlers: a skills
+	 * root, a single skill directory, or a `SKILL.md` file. They rank below every
+	 * configured source (first name wins) and still honor ignore/include/disabled
+	 * filters. Their read/scan failures carry the contributing `extensionPath`.
 	 */
-	extensionSkillPaths?: readonly string[];
+	extensionSkillPaths?: readonly ExtensionSkillPath[];
 }
 
 /**
@@ -545,21 +555,34 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 	// source: first name wins, collisions warn. Runs before managed skills so an
 	// extension skill still owns its name against auto-learned ones.
 	const extensionScanResults = await Promise.all(
-		extensionSkillPaths.map(async skillPath => {
-			const isSkillFile = path.basename(skillPath).toLowerCase() === "skill.md";
+		extensionSkillPaths.map(async ({ path: skillPath, extensionPath }) => {
+			// Branch on the actual file type: a directory may be named `SKILL.md`.
+			let isSkillFile = false;
+			try {
+				isSkillFile = (await fs.stat(skillPath)).isFile();
+			} catch {
+				// Gone since resolution: scanned as a directory, which yields nothing.
+			}
 			const dir = isSkillFile ? path.dirname(skillPath) : skillPath;
 			const scanResult = await scanSkillsFromDir(
 				{ cwd, home: os.homedir(), repoRoot: null },
 				{ dir, providerId: "extension", level: "user", requireDescription: true, includeSelf: true },
 			);
+			const selfSkillPath = path.join(dir, "SKILL.md");
 			const items = isSkillFile
 				? scanResult.items.filter(item => path.resolve(item.path) === path.resolve(skillPath))
 				: scanResult.items;
-			return { skillPath, items, warnings: scanResult.warnings ?? [] };
+			// A single-file contribution scans its parent directory; only failures about that file are its own.
+			const warnings = (scanResult.warnings ?? []).map(message => ({
+				skillPath,
+				message,
+				...((!isSkillFile || message.includes(selfSkillPath)) && { extensionPath }),
+			}));
+			return { items, warnings };
 		}),
 	);
-	for (const { skillPath, items, warnings } of extensionScanResults) {
-		collisionWarnings.push(...warnings.map(message => ({ skillPath, message })));
+	for (const { items, warnings } of extensionScanResults) {
+		collisionWarnings.push(...warnings);
 		for (const capSkill of items) {
 			if (disabledSkillNames.has(capSkill.name)) continue;
 			if (matchesIgnorePatterns(capSkill.name)) continue;

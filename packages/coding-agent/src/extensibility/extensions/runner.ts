@@ -499,6 +499,23 @@ export interface DiscoveredResourcePaths {
 }
 
 /**
+ * Render an untrusted handler value for a warning. Never throws: BigInts, cycles, and
+ * hostile `toJSON`/`toString` fall back to `Bun.inspect`, then to the value's type.
+ */
+function formatDiscoveredEntry(entry: unknown): string {
+	try {
+		return JSON.stringify(entry) ?? String(entry);
+	} catch {
+		// BigInt, a cycle, or a throwing toJSON/toString: fall through to Bun.inspect.
+	}
+	try {
+		return Bun.inspect(entry, { depth: 1, compact: true });
+	} catch {
+		return `<${typeof entry}>`;
+	}
+}
+
+/**
  * Append a handler's `field` entries to `out`. Handler results are untyped at runtime,
  * so a non-array field or a non-string / blank entry is reported and skipped.
  */
@@ -521,7 +538,7 @@ function collectDiscoveredPaths(
 			report({
 				extensionPath,
 				event: "resources_discover",
-				error: `Ignoring ${field} entry ${JSON.stringify(entry) ?? String(entry)}: expected a non-empty path string`,
+				error: `Ignoring ${field} entry ${formatDiscoveredEntry(entry)}: expected a non-empty path string`,
 			});
 		}
 	}

@@ -29,10 +29,10 @@ export interface ExtensionThemeFile {
 
 /** Validated contributions ready to merge into discovery. */
 export interface ResolvedExtensionResources {
-	/** Skills roots, single skill directories, or `SKILL.md` files. */
-	skillPaths: string[];
-	/** Prompt-template directories or `.md` files. */
-	promptPaths: string[];
+	/** Skills roots, single skill directories, or `SKILL.md` files, tagged with their extension. */
+	skillPaths: DiscoveredResourcePath[];
+	/** Prompt-template directories or `.md` files, tagged with their extension. */
+	promptPaths: DiscoveredResourcePath[];
 	/** Theme files expanded from directories and `.json` paths, first name wins. */
 	themes: ExtensionThemeFile[];
 	warnings: ExtensionResourceWarning[];
@@ -77,11 +77,16 @@ export async function resolveExtensionResources(
 	]);
 	const themes = await collectThemeFiles(themeRoots, warnings);
 	return {
-		skillPaths: skills.map(entry => entry.path),
-		promptPaths: prompts.map(entry => entry.path),
+		skillPaths: skills.map(({ path, extensionPath }) => ({ path, extensionPath })),
+		promptPaths: prompts.map(({ path, extensionPath }) => ({ path, extensionPath })),
 		themes,
 		warnings,
 	};
+}
+
+/** A contributed path that exists and has an accepted type; `isDirectory` comes from its stat. */
+interface ResolvedResourcePath extends DiscoveredResourcePath {
+	isDirectory: boolean;
 }
 
 async function resolveKind(
@@ -89,8 +94,8 @@ async function resolveKind(
 	rule: ResourceKindRule,
 	cwd: string,
 	warnings: ExtensionResourceWarning[],
-): Promise<DiscoveredResourcePath[]> {
-	const resolved: DiscoveredResourcePath[] = [];
+): Promise<ResolvedResourcePath[]> {
+	const resolved: ResolvedResourcePath[] = [];
 	const seen = new Set<string>();
 	for (const { path: rawPath, extensionPath } of entries) {
 		const absolute = path.resolve(cwd, expandTilde(rawPath));
@@ -118,7 +123,7 @@ async function resolveKind(
 			});
 			continue;
 		}
-		resolved.push({ path: absolute, extensionPath });
+		resolved.push({ path: absolute, extensionPath, isDirectory: stat.isDirectory() });
 	}
 	return resolved;
 }
@@ -128,15 +133,15 @@ async function resolveKind(
  * custom themes directory) and validate each file. Theme names come from file names.
  */
 async function collectThemeFiles(
-	roots: readonly DiscoveredResourcePath[],
+	roots: readonly ResolvedResourcePath[],
 	warnings: ExtensionResourceWarning[],
 ): Promise<ExtensionThemeFile[]> {
 	const builtinThemes = getBuiltinThemes();
 	const themes: ExtensionThemeFile[] = [];
 	const claimed = new Map<string, string>();
-	for (const { path: root, extensionPath } of roots) {
+	for (const { path: root, extensionPath, isDirectory } of roots) {
 		let files: string[];
-		if (root.toLowerCase().endsWith(".json")) {
+		if (!isDirectory) {
 			files = [root];
 		} else {
 			try {

@@ -101,12 +101,14 @@ async function loadTemplateFile(fullPath: string, sourceStr: string): Promise<Pr
 }
 
 /**
- * Recursively scan a directory for .md files (and symlinks to .md files) and load them as prompt templates
+ * Recursively scan a directory for .md files (and symlinks to .md files) and load them as prompt templates.
+ * Read/scan failures go to `onError` when given, otherwise to the log.
  */
 async function loadTemplatesFromDir(
 	dir: string,
 	source: PromptTemplateSource,
 	subdir: string = "",
+	onError?: (message: string) => void,
 ): Promise<PromptTemplate[]> {
 	const templates: PromptTemplate[] = [];
 	try {
@@ -132,39 +134,64 @@ async function loadTemplatesFromDir(
 
 				templates.push(await loadTemplateFile(fullPath, sourceStr));
 			} catch (error) {
-				logger.warn("Failed to load prompt template", { path: fullPath, error: String(error) });
+				if (onError) onError(`Failed to load prompt template ${fullPath}: ${String(error)}`);
+				else logger.warn("Failed to load prompt template", { path: fullPath, error: String(error) });
 			}
 		}
 	} catch (error) {
 		if (!fs.existsSync(dir)) {
 			return [];
 		}
-		logger.warn("Failed to scan prompt templates directory", { dir, error: String(error) });
+		if (onError) onError(`Failed to scan prompt templates directory ${dir}: ${String(error)}`);
+		else logger.warn("Failed to scan prompt templates directory", { dir, error: String(error) });
 	}
 
 	return templates;
 }
 
+/** A prompt-template read/scan failure under one contributed path. */
+export interface PromptTemplatePathError {
+	/** The contributed path (as passed in) whose scan produced the failure. */
+	path: string;
+	message: string;
+}
+
 /**
  * Load extension-contributed prompt templates (`resources_discover` `promptPaths`).
  * Each path is an absolute directory (scanned recursively like `prompts/`) or a
- * single `.md` file; templates carry the `(extension)` source label. Callers
- * validate paths beforehand; unreadable entries are logged and skipped.
+ * single `.md` file, told apart by its stat; templates carry the `(extension)` source
+ * label. Unreadable entries are skipped and returned as errors keyed by the
+ * contributed path so callers can attribute them.
  */
-export async function loadPromptTemplatesFromPaths(paths: readonly string[]): Promise<PromptTemplate[]> {
+export async function loadPromptTemplatesFromPaths(
+	paths: readonly string[],
+): Promise<{ templates: PromptTemplate[]; errors: PromptTemplatePathError[] }> {
 	const templates: PromptTemplate[] = [];
+	const errors: PromptTemplatePathError[] = [];
 	for (const templatePath of paths) {
-		if (templatePath.toLowerCase().endsWith(".md")) {
-			try {
-				templates.push(await loadTemplateFile(templatePath, "(extension)"));
-			} catch (error) {
-				logger.warn("Failed to load prompt template", { path: templatePath, error: String(error) });
-			}
-		} else {
-			templates.push(...(await loadTemplatesFromDir(templatePath, "extension")));
+		const report = (message: string) => errors.push({ path: templatePath, message });
+		let stat: fs.Stats;
+		try {
+			stat = await fs.promises.stat(templatePath);
+		} catch (error) {
+			report(`Cannot read prompt path ${templatePath}: ${String(error)}`);
+			continue;
+		}
+		if (stat.isDirectory()) {
+			templates.push(...(await loadTemplatesFromDir(templatePath, "extension", "", report)));
+			continue;
+		}
+		if (!stat.isFile() || !templatePath.toLowerCase().endsWith(".md")) {
+			report(`Ignoring prompt path ${templatePath}: expected a directory or a .md file`);
+			continue;
+		}
+		try {
+			templates.push(await loadTemplateFile(templatePath, "(extension)"));
+		} catch (error) {
+			report(`Failed to load prompt template ${templatePath}: ${String(error)}`);
 		}
 	}
-	return templates;
+	return { templates, errors };
 }
 
 export interface LoadPromptTemplatesOptions {

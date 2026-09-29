@@ -12,6 +12,7 @@ import {
 	createTheme,
 	getBuiltinThemes,
 	getExtensionThemeFiles,
+	isExtensionThemeStale,
 	loadTheme,
 	loadThemeJson,
 	loadThemeJsonSync,
@@ -325,16 +326,37 @@ export function setThemeInstance(themeInstance: Theme): void {
 }
 
 /**
- * Replace the extension-contributed themes (`resources_discover` `themePaths`), keyed by name.
+ * Replace `owner`'s extension-contributed themes (`resources_discover` `themePaths`), keyed by
+ * name; other owners' contributions are untouched and an empty list unregisters `owner`.
  * When auto-detection resolves to a configured theme only an extension provides — startup
- * fell back to `dark` before extensions ran — that theme is applied now. An active theme
- * whose contribution is dropped stays applied until the next theme change.
+ * fell back to `dark` before extensions ran — that theme is applied now. An active extension
+ * theme whose contributed file moved or changed on disk is reloaded. An active theme whose
+ * contribution is dropped stays applied until the next theme change.
  */
-export function setExtensionThemes(themes: Iterable<{ name: string; path: string }>): void {
-	setExtensionThemeFiles(themes);
-	if (typeof theme === "undefined" || !autoDetectedTheme) return;
-	if (getExtensionThemeFiles().has(getDefaultTheme())) {
-		reevaluateAutoTheme("extension themes");
+export async function setExtensionThemes(
+	owner: object,
+	themes: Iterable<{ name: string; path: string }>,
+): Promise<void> {
+	setExtensionThemeFiles(owner, themes);
+	if (typeof theme === "undefined") return;
+	if (autoDetectedTheme) {
+		const resolved = getDefaultTheme();
+		if (resolved !== currentThemeName && getExtensionThemeFiles().has(resolved)) {
+			reevaluateAutoTheme("extension themes");
+			return;
+		}
+	}
+	const activeName = currentThemeName;
+	if (!activeName || previewThemeName !== undefined || !(await isExtensionThemeStale(activeName))) return;
+	const requestId = ++themeLoadRequestId;
+	try {
+		const loadedTheme = await loadTheme(activeName, getCurrentThemeOptions());
+		if (requestId !== themeLoadRequestId || currentThemeName !== activeName) return;
+		assignTheme(loadedTheme);
+		notifyThemeChange({ ephemeral: true });
+	} catch (error) {
+		// Keep the last good theme while the contributed file is invalid.
+		logger.debug("Extension theme reload failed", { theme: activeName, error: String(error) });
 	}
 }
 
