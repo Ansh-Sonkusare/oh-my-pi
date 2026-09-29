@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
+import * as path from "node:path";
 import { getProjectDir, parseFrontmatter, prompt } from "@oh-my-pi/pi-utils";
 import {
 	isValidManagedSkillName,
@@ -280,6 +281,13 @@ export interface LoadSkillsOptions extends SkillsSettings {
 	 * extensions all survive outside the construction-time invocation scope.
 	 */
 	extensionRoots?: EffectiveExtensionRoots;
+	/**
+	 * Absolute skill paths contributed by extension `resources_discover` handlers:
+	 * a skills root, a single skill directory, or a `SKILL.md` file. They rank
+	 * below every configured source (first name wins) and still honor
+	 * ignore/include/disabled filters.
+	 */
+	extensionSkillPaths?: readonly string[];
 }
 
 /**
@@ -302,6 +310,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 		includeSkills = [],
 		disabledExtensions = [],
 		extensionRoots,
+		extensionSkillPaths = [],
 	} = options;
 
 	// Early return if skills are disabled
@@ -530,6 +539,57 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 		const resolvedPath = customRealPaths[i];
 		if (realPathSet.has(resolvedPath)) continue;
 		if (admit(skill, body, frontmatter, namespace) !== undefined) realPathSet.add(resolvedPath);
+	}
+
+	// Extension-contributed paths (`resources_discover`) rank below every configured
+	// source: first name wins, collisions warn. Runs before managed skills so an
+	// extension skill still owns its name against auto-learned ones.
+	const extensionScanResults = await Promise.all(
+		extensionSkillPaths.map(async skillPath => {
+			const isSkillFile = path.basename(skillPath).toLowerCase() === "skill.md";
+			const dir = isSkillFile ? path.dirname(skillPath) : skillPath;
+			const scanResult = await scanSkillsFromDir(
+				{ cwd, home: os.homedir(), repoRoot: null },
+				{ dir, providerId: "extension", level: "user", requireDescription: true, includeSelf: true },
+			);
+			const items = isSkillFile
+				? scanResult.items.filter(item => path.resolve(item.path) === path.resolve(skillPath))
+				: scanResult.items;
+			return { skillPath, items, warnings: scanResult.warnings ?? [] };
+		}),
+	);
+	for (const { skillPath, items, warnings } of extensionScanResults) {
+		collisionWarnings.push(...warnings.map(message => ({ skillPath, message })));
+		for (const capSkill of items) {
+			if (disabledSkillNames.has(capSkill.name)) continue;
+			if (matchesIgnorePatterns(capSkill.name)) continue;
+			if (!matchesIncludePatterns(capSkill.name)) continue;
+			let resolvedPath: string;
+			try {
+				resolvedPath = await fs.realpath(capSkill.path);
+			} catch {
+				resolvedPath = capSkill.path;
+			}
+			if (realPathSet.has(resolvedPath)) continue;
+			const existing = skillMap.get(capSkill.name);
+			if (existing) {
+				collisionWarnings.push({
+					skillPath: capSkill.path,
+					message: `name collision: "${capSkill.name}" already loaded from ${existing.filePath}, skipping this one`,
+				});
+				continue;
+			}
+			skillMap.set(capSkill.name, {
+				name: capSkill.name,
+				description: typeof capSkill.frontmatter?.description === "string" ? capSkill.frontmatter.description : "",
+				filePath: capSkill.path,
+				baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
+				source: "extension:user",
+				hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
+				_source: { ...capSkill._source, providerName: "Extension" },
+			});
+			realPathSet.add(resolvedPath);
+		}
 	}
 
 	// Managed (auto-learn) skills resolve dead-last with first-wins. Source from

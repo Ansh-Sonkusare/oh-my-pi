@@ -2646,6 +2646,7 @@ export class AcpAgent implements Agent {
 			"rpc",
 		);
 		await extensionRunner.emit({ type: "session_start" });
+		await record.session.discoverExtensionResources();
 		record.extensionsConfigured = true;
 	}
 

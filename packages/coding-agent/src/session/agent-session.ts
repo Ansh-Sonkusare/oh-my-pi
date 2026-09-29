@@ -120,7 +120,7 @@ import {
 	type ResolvedModelRoleValue,
 	resolveCliModel,
 } from "../config/model-resolver";
-import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
+import { expandPromptTemplate, loadPromptTemplatesFromPaths, type PromptTemplate } from "../config/prompt-templates";
 import { buildServiceTierByFamily, isServiceTierForFamily, serviceTierSettingToTier } from "../config/service-tier";
 import { combine, type SettingsScope } from "../config/registry";
 import type { Settings } from "../config/settings";
@@ -159,6 +159,10 @@ import type {
 import { emitSessionShutdownEvent, TOP_LEVEL_AGENT } from "../extensibility/extensions";
 import { ManagedTimers } from "../extensibility/extensions/managed-timers";
 import { createExtensionModelQuery } from "../extensibility/extensions/model-api";
+import {
+	type ResolvedExtensionResources,
+	resolveExtensionResources,
+} from "../extensibility/extensions/resources-discover";
 import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
 import type { CustomCommandContext } from "../extensibility/custom-commands/types";
 import { SkillDescriptionCatalog } from "../extensibility/skill-descriptions";
@@ -176,7 +180,7 @@ import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
 import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionState } from "../mnemopi/state";
 import { MAGIC_KEYWORDS, type MagicKeywordContext, type MagicKeywordId } from "../modes/magic-keywords";
 import { containsMagicKeyword } from "@oh-my-pi/pi-tui/prompt/magic-keywords";
-import { theme } from "@oh-my-pi/pi-tui/theme";
+import { setExtensionThemes, theme } from "@oh-my-pi/pi-tui/theme";
 import { parseTurnBudget } from "../modes/turn-budget";
 import { computeNonMessageTokens } from "@oh-my-pi/pi-tui/status-line/context-usage";
 import { type PlanApprovalDetails, resolveApprovedPlan } from "../plan-mode/approved-plan";
@@ -721,6 +725,8 @@ export class AgentSession implements SettingsScope {
 
 	readonly #providerBoundary: SessionProviderBoundary;
 	#promptTemplates: PromptTemplate[];
+	/** Prompt templates discovered from disk (or supplied by the host), before extension contributions. */
+	#basePromptTemplates: PromptTemplate[];
 	#slashCommands: FileSlashCommand[];
 	/** Tail of the serialized {@link refreshSkillsAndCommands} chain. */
 	#skillsAndCommandsRefresh: Promise<void> = Promise.resolve();
@@ -737,6 +743,10 @@ export class AgentSession implements SettingsScope {
 	 * command.
 	 */
 	readonly #queuedMessageRawText = new WeakMap<AgentMessage, string>();
+	/** `resources_discover` ran its startup round; later rediscoveries re-emit it with reason `reload`. */
+	#resourcesDiscoverStarted = false;
+	/** Contribution from the last `resources_discover` round; `undefined` when it contributed nothing. */
+	#extensionResources: ResolvedExtensionResources | undefined;
 
 	// Event subscription state
 	#unsubscribeAgent?: () => void;
@@ -1573,7 +1583,8 @@ export class AgentSession implements SettingsScope {
 			serviceTierByFamily: config.serviceTierByFamily,
 		});
 
-		this.#promptTemplates = config.promptTemplates ?? [];
+		this.#basePromptTemplates = config.promptTemplates ?? [];
+		this.#promptTemplates = this.#basePromptTemplates;
 		this.#slashCommands = config.slashCommands ?? [];
 		this.#extensionRunner = config.extensionRunner;
 		this.#cacheWarmer = config.cacheWarmer;
@@ -5994,12 +6005,15 @@ export class AgentSession implements SettingsScope {
 	/**
 	 * Rediscovers skills and file-based slash commands for the current cwd, rebuilds the
 	 * system prompt, and notifies command-metadata listeners (TUI autocomplete, RPC/ACP
-	 * command lists). Serialized so overlapping reloads apply in call order.
+	 * command lists). Once the startup `resources_discover` round has run, re-emits it with
+	 * reason `reload` first so extension-contributed paths are replaced, not accumulated.
+	 * Serialized so overlapping reloads apply in call order.
 	 */
 	refreshSkillsAndCommands(): Promise<void> {
 		const refresh = this.#skillsAndCommandsRefresh
 			.catch(() => {})
 			.then(async () => {
+				if (this.#resourcesDiscoverStarted) await this.#applyExtensionResources("reload");
 				resetCapabilities();
 				this.#slashCommands = await loadSlashCommands({
 					cwd: this.sessionManager.getCwd(),
@@ -6011,6 +6025,103 @@ export class AgentSession implements SettingsScope {
 			});
 		this.#skillsAndCommandsRefresh = refresh;
 		return refresh;
+	}
+
+	/**
+	 * Emits `resources_discover` with reason `startup` and merges the returned skill,
+	 * prompt-template, and theme paths into discovery. Hosts call it once, right after
+	 * `session_start`; later {@link refreshSkillsAndCommands} and {@link reload} calls re-emit
+	 * it with reason `reload`. No-op without `resources_discover` handlers, and in subagent
+	 * sessions: they inherit the parent's skills and prompt templates, so the round (and every
+	 * later reload round) belongs to the top-level session only.
+	 */
+	discoverExtensionResources(): Promise<void> {
+		if (this.#agentKind !== "main") return Promise.resolve();
+		this.#resourcesDiscoverStarted = true;
+		return this.#queueExtensionResourcesRound("startup");
+	}
+
+	/**
+	 * Queues one `resources_discover` round on the skills/commands refresh chain and applies
+	 * only what it changed: skills are rediscovered when extension skill paths were or are
+	 * present, otherwise prompt-template changes just notify command-metadata listeners.
+	 * File-based slash commands are left untouched.
+	 */
+	#queueExtensionResourcesRound(reason: "startup" | "reload"): Promise<void> {
+		const round = this.#skillsAndCommandsRefresh
+			.catch(() => {})
+			.then(async () => {
+				const { skillsChanged, promptsChanged } = await this.#applyExtensionResources(reason);
+				if (skillsChanged) {
+					// Rediscovers skills, rebuilds the prompt, and notifies command-metadata listeners.
+					await this.#tools.refreshSkills();
+				} else if (promptsChanged) {
+					this.#notifyCommandMetadataChanged();
+				}
+			});
+		this.#skillsAndCommandsRefresh = round;
+		return round;
+	}
+
+	/**
+	 * One `resources_discover` round: emit, resolve against the session cwd, report skipped
+	 * paths as extension errors, and replace the previous contribution — skill paths feed the
+	 * next skill rediscovery, prompt templates merge immediately below disk/host templates
+	 * (first name wins), and a top-level session registers themes process-wide.
+	 * Reports whether skill or prompt state needs a refresh.
+	 */
+	async #applyExtensionResources(
+		reason: "startup" | "reload",
+	): Promise<{ skillsChanged: boolean; promptsChanged: boolean }> {
+		const runner = this.#extensionRunner;
+		const previous = this.#extensionResources;
+		if (!runner || (!previous && !runner.hasHandlers("resources_discover"))) {
+			return { skillsChanged: false, promptsChanged: false };
+		}
+		const cwd = this.sessionManager.getCwd();
+		let resolved: ResolvedExtensionResources;
+		try {
+			resolved = await resolveExtensionResources(await runner.emitResourcesDiscover(cwd, reason), cwd);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			logger.warn("resources_discover failed; keeping previous extension resources", { reason, error: message });
+			runner.emitError({ extensionPath: "<resources_discover>", event: "resources_discover", error: message });
+			return { skillsChanged: false, promptsChanged: false };
+		}
+		for (const warning of resolved.warnings) {
+			logger.warn("resources_discover path skipped", { extension: warning.extensionPath, message: warning.message });
+			runner.emitError({
+				extensionPath: warning.extensionPath,
+				event: "resources_discover",
+				error: warning.message,
+			});
+		}
+
+		const hasContribution =
+			resolved.skillPaths.length > 0 || resolved.promptPaths.length > 0 || resolved.themes.length > 0;
+		this.#extensionResources = hasContribution ? resolved : undefined;
+
+		// Re-read even unchanged paths: a reload should pick up edited files.
+		const skillsChanged = resolved.skillPaths.length > 0 || (previous?.skillPaths.length ?? 0) > 0;
+		this.#tools.setExtensionSkillPaths(resolved.skillPaths);
+
+		const promptsChanged = resolved.promptPaths.length > 0 || (previous?.promptPaths.length ?? 0) > 0;
+		if (promptsChanged) {
+			const merged = [...this.#basePromptTemplates];
+			const taken = new Set(merged.map(template => template.name));
+			for (const template of await loadPromptTemplatesFromPaths(resolved.promptPaths)) {
+				if (taken.has(template.name)) continue;
+				taken.add(template.name);
+				merged.push(template);
+			}
+			this.#promptTemplates = merged;
+		}
+
+		// The theme registry is process-global; only top-level sessions run rounds (see discoverExtensionResources).
+		if (resolved.themes.length > 0 || (previous?.themes.length ?? 0) > 0) {
+			setExtensionThemes(resolved.themes);
+		}
+		return { skillsChanged, promptsChanged };
 	}
 
 	/**
@@ -10409,16 +10520,21 @@ export class AgentSession implements SettingsScope {
 	// =========================================================================
 
 	/**
-	 * Reload the current session from disk.
+	 * Reload the current session from disk, then re-run the `resources_discover` round.
 	 *
-	 * Intended for extension commands and headless modes to re-read the current session
-	 * file and re-emit session_switch hooks.
+	 * Intended for extension commands (`ctx.reload()`) and headless modes: re-reads the
+	 * current session file (file-backed sessions only; re-emits session_switch hooks), then —
+	 * once the startup round has run — re-emits `resources_discover` with reason `reload` and
+	 * refreshes the skills, prompt templates, and themes it contributes. File-based and
+	 * host-supplied slash commands are left as they were.
 	 */
 	async reload(): Promise<void> {
 		const sessionFile = this.sessionFile;
-		if (!sessionFile) return;
-		const switched = await this.switchSession(sessionFile);
-		if (!switched) throw new Error("Session reload cancelled");
+		if (sessionFile) {
+			const switched = await this.switchSession(sessionFile);
+			if (!switched) throw new Error("Session reload cancelled");
+		}
+		if (this.#resourcesDiscoverStarted) await this.#queueExtensionResourcesRound("reload");
 	}
 	/**
 	 * Switch to a different session file.

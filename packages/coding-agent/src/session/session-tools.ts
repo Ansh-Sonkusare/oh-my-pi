@@ -387,6 +387,8 @@ export class SessionTools {
 	#skillWarnings: SkillWarning[];
 	#skillsSettings: SkillsSettings | undefined;
 	#skillsReloadable: boolean;
+	/** Absolute skill paths from extension `resources_discover` handlers, merged on every rediscovery. */
+	#extensionSkillPaths: readonly string[] = [];
 	/**
 	 * Prompt surface committed by the last system-prompt rebuild. The
 	 * provider-visible system prompt is deliberately byte-stable across
@@ -1707,6 +1709,14 @@ export class SessionTools {
 		};
 	}
 
+	/**
+	 * Replaces the extension-contributed skill paths used by {@link refreshSkills}.
+	 * Sessions with an explicit (non-reloadable) skill list ignore them.
+	 */
+	setExtensionSkillPaths(paths: readonly string[]): void {
+		this.#extensionSkillPaths = [...paths];
+	}
+
 	/** Rediscovers reloadable skills and refreshes prompt metadata. */
 	async refreshSkills(): Promise<void> {
 		resetCapabilities();
@@ -1717,6 +1727,7 @@ export class SessionTools {
 				cwd: this.#host.sessionManager.getCwd(),
 				disabledExtensions: cfgDisabledExtensions.get(this.#host.settings),
 				extensionRoots: this.#host.effectiveExtensionRoots(),
+				extensionSkillPaths: this.#extensionSkillPaths,
 			});
 			this.#skills = discovered.skills;
 			this.#skillWarnings = discovered.warnings;

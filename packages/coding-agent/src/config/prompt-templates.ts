@@ -71,12 +71,41 @@ export function appendInlineArgsFallback(
 	return `${rendered}\n\n${argsText}`;
 }
 
+type PromptTemplateSource = "user" | "project" | "extension";
+
+/** Parse one markdown file into a prompt template named after the file. */
+async function loadTemplateFile(fullPath: string, sourceStr: string): Promise<PromptTemplate> {
+	const rawContent = await Bun.file(fullPath).text();
+	const { frontmatter, body } = parseFrontmatter(rawContent, { source: fullPath });
+
+	// Get description from frontmatter or first non-empty line
+	let description = String(frontmatter.description || "");
+	if (!description) {
+		const firstLine = body.split("\n").find(line => line.trim());
+		if (firstLine) {
+			// Truncate if too long
+			description = firstLine.slice(0, 60);
+			if (firstLine.length > 60) description += "...";
+		}
+	}
+
+	// Append source to description
+	description = description ? `${description} ${sourceStr}` : sourceStr;
+
+	return {
+		name: path.basename(fullPath).slice(0, -3), // Remove .md extension
+		description,
+		content: body,
+		source: sourceStr,
+	};
+}
+
 /**
  * Recursively scan a directory for .md files (and symlinks to .md files) and load them as prompt templates
  */
 async function loadTemplatesFromDir(
 	dir: string,
-	source: "user" | "project",
+	source: PromptTemplateSource,
 	subdir: string = "",
 ): Promise<PromptTemplate[]> {
 	const templates: PromptTemplate[] = [];
@@ -92,50 +121,16 @@ async function loadTemplatesFromDir(
 
 		for (const entry of entries) {
 			const fullPath = path.join(dir, entry);
-			const file = Bun.file(fullPath);
 
 			try {
-				const stat = await file.exists();
-				if (!stat) continue;
+				if (!entry.endsWith(".md") || !(await Bun.file(fullPath).exists())) continue;
 
-				if (entry.endsWith(".md")) {
-					const rawContent = await file.text();
-					const { frontmatter, body } = parseFrontmatter(rawContent, { source: fullPath });
+				// Build source string based on subdirectory structure
+				const entryDir = entry.includes("/") ? entry.split("/").slice(0, -1).join(":") : "";
+				const fullSubdir = subdir && entryDir ? `${subdir}:${entryDir}` : entryDir || subdir;
+				const sourceStr = fullSubdir ? `(${source}:${fullSubdir})` : `(${source})`;
 
-					const name = entry.split("/").pop()!.slice(0, -3); // Remove .md extension
-
-					// Build source string based on subdirectory structure
-					const entryDir = entry.includes("/") ? entry.split("/").slice(0, -1).join(":") : "";
-					const fullSubdir = subdir && entryDir ? `${subdir}:${entryDir}` : entryDir || subdir;
-
-					let sourceStr: string;
-					if (source === "user") {
-						sourceStr = fullSubdir ? `(user:${fullSubdir})` : "(user)";
-					} else {
-						sourceStr = fullSubdir ? `(project:${fullSubdir})` : "(project)";
-					}
-
-					// Get description from frontmatter or first non-empty line
-					let description = String(frontmatter.description || "");
-					if (!description) {
-						const firstLine = body.split("\n").find(line => line.trim());
-						if (firstLine) {
-							// Truncate if too long
-							description = firstLine.slice(0, 60);
-							if (firstLine.length > 60) description += "...";
-						}
-					}
-
-					// Append source to description
-					description = description ? `${description} ${sourceStr}` : sourceStr;
-
-					templates.push({
-						name,
-						description,
-						content: body,
-						source: sourceStr,
-					});
-				}
+				templates.push(await loadTemplateFile(fullPath, sourceStr));
 			} catch (error) {
 				logger.warn("Failed to load prompt template", { path: fullPath, error: String(error) });
 			}
@@ -147,6 +142,28 @@ async function loadTemplatesFromDir(
 		logger.warn("Failed to scan prompt templates directory", { dir, error: String(error) });
 	}
 
+	return templates;
+}
+
+/**
+ * Load extension-contributed prompt templates (`resources_discover` `promptPaths`).
+ * Each path is an absolute directory (scanned recursively like `prompts/`) or a
+ * single `.md` file; templates carry the `(extension)` source label. Callers
+ * validate paths beforehand; unreadable entries are logged and skipped.
+ */
+export async function loadPromptTemplatesFromPaths(paths: readonly string[]): Promise<PromptTemplate[]> {
+	const templates: PromptTemplate[] = [];
+	for (const templatePath of paths) {
+		if (templatePath.toLowerCase().endsWith(".md")) {
+			try {
+				templates.push(await loadTemplateFile(templatePath, "(extension)"));
+			} catch (error) {
+				logger.warn("Failed to load prompt template", { path: templatePath, error: String(error) });
+			}
+		} else {
+			templates.push(...(await loadTemplatesFromDir(templatePath, "extension")));
+		}
+	}
 	return templates;
 }
 

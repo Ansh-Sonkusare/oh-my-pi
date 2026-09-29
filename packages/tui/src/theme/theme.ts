@@ -11,10 +11,12 @@ import {
 	type CreateThemeOptions,
 	createTheme,
 	getBuiltinThemes,
+	getExtensionThemeFiles,
 	loadTheme,
 	loadThemeJson,
 	loadThemeJsonSync,
 	loadThemeSync,
+	setExtensionThemeFiles,
 } from "./loader";
 import { isValidThemeBg, isValidThemeColor, type ThemeColor, type ThemeJson } from "./schema";
 import type { SymbolPreset } from "./symbols";
@@ -320,6 +322,20 @@ export function setThemeInstance(themeInstance: Theme): void {
 	currentThemeName = "<in-memory>";
 	stopThemeWatcher();
 	notifyThemeChange({ ephemeral: true });
+}
+
+/**
+ * Replace the extension-contributed themes (`resources_discover` `themePaths`), keyed by name.
+ * When auto-detection resolves to a configured theme only an extension provides — startup
+ * fell back to `dark` before extensions ran — that theme is applied now. An active theme
+ * whose contribution is dropped stays applied until the next theme change.
+ */
+export function setExtensionThemes(themes: Iterable<{ name: string; path: string }>): void {
+	setExtensionThemeFiles(themes);
+	if (typeof theme === "undefined" || !autoDetectedTheme) return;
+	if (getExtensionThemeFiles().has(getDefaultTheme())) {
+		reevaluateAutoTheme("extension themes");
+	}
 }
 
 /**
@@ -874,8 +890,8 @@ export function getNativeThemePalette(): NativeThemePalette {
 
 /**
  * Check if a theme is a "light" theme by analyzing its status-line background
- * luminance. Loads theme JSON synchronously (built-in or custom file on disk)
- * for callers in synchronous flows (settings migration, setup wizard).
+ * luminance. Loads theme JSON synchronously (built-in, custom file on disk, or an
+ * extension-contributed file) for callers in synchronous flows (settings migration, setup wizard).
  */
 export function isLightTheme(themeName?: string): boolean {
 	const name = themeName ?? "dark";
@@ -884,9 +900,13 @@ export function isLightTheme(themeName?: string): boolean {
 	if (name in builtinThemes) {
 		themeJson = builtinThemes[name];
 	} else {
+		const customPath = path.join(getCustomThemesDir(), `${name}.json`);
+		const extensionPath = getExtensionThemeFiles().get(name);
 		try {
-			const customPath = path.join(getCustomThemesDir(), `${name}.json`);
-			const content = fs.readFileSync(customPath, "utf-8");
+			const content = fs.readFileSync(
+				extensionPath && !fs.existsSync(customPath) ? extensionPath : customPath,
+				"utf-8",
+			);
 			themeJson = JSON.parse(content) as ThemeJson;
 		} catch {
 			return false;
