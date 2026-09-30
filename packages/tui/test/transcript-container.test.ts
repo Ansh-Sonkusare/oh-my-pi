@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import { UserMessageComponent } from "@oh-my-pi/pi-tui/chat/user-message";
 import {
 	TranscriptContainer,
 	type TranscriptStableRow,
@@ -591,6 +592,24 @@ describe("TranscriptContainer", () => {
 		expect(rows[0]).toBe("2 more transcript blocks active");
 		expect(Bun.stripANSI(rows[1] ?? "").trim()).toBe("Implemented");
 		expect(rows[2]).toBe("task running");
+	});
+
+	it("shows a moving user bubble's text without leaving prompt marks under overflow pressure", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["stuck tool"], false));
+		for (let index = 0; index < 6; index++) transcript.addChild(new Block([`settled ${index}`], true));
+		const user = new UserMessageComponent("real device?");
+		transcript.addChild(user);
+		transcript.addChild(new Block(["after 1"], true));
+		transcript.addChild(new Block(["after 2"], true));
+
+		expect(user.render(80)[0]).toContain("\x1b]133;A");
+		for (let index = 0; index < 2; index++) {
+			const rows = transcript.renderViewport(80, 5, { tick: index, now: index });
+			expect(Bun.stripANSI(rows[2 - index] ?? "").trim()).toBe("real device?");
+			expect(rows.every(row => !row.includes("\x1b]133;"))).toBe(true);
+			transcript.addChild(new Block([`after ${index + 3}`], true));
+		}
 	});
 
 	it("gives surplus rows to assistant text before a growing tool card (issue 9718)", () => {

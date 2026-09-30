@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed user messages appearing as blank bars and leaving extra iTerm2 prompt marks when a long live transcript overflows the viewport ([#13835](https://github.com/can1357/oh-my-pi/issues/13835)).
+
+
 ## [18.4.4] - 2026-09-29
 
 ### Added

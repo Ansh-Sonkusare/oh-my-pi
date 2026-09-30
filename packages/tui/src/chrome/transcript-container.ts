@@ -57,6 +57,8 @@ interface FinalizableBlock {
 	isTranscriptBlockFinalized?(): boolean;
 	/** Render the row that must remain represented under emergency viewport pressure. */
 	renderTranscriptBlockEmergencyRow?(width: number): string | undefined;
+	/** Render a moving one-row block without position-dependent terminal markers. */
+	renderTranscriptBlockOverflowRow?(width: number): string | undefined;
 }
 
 /**
@@ -1136,7 +1138,8 @@ export class TranscriptContainer extends Container {
 			const rendered = this.#renderEntry(candidate.entry, width).slice(
 				this.#projectedEmittedRowCount(candidate.entry, candidate.index, width),
 			);
-			output.push(rendered[0] ?? "");
+			const block = candidate.entry.component as Component & FinalizableBlock;
+			output.push(block.renderTranscriptBlockOverflowRow?.(width) ?? rendered[0] ?? "");
 			owners.push(candidate.entry.component);
 		}
 		const visibleOutput = output.slice(0, rows);

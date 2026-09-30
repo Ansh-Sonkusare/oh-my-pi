@@ -269,6 +269,15 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 		return applyBackgroundToLine(` ${marker}${padding(gap)}${emoji}`, width, this.#bgColor);
 	}
 
+	/** Keep the first message text row visible when overflow reduces each block to one moving row. */
+	renderTranscriptBlockOverflowRow(width: number): string | undefined {
+		const lines = super.render(width);
+		for (let index = 1; index < lines.length - 1; index++) {
+			if (Bun.stripANSI(lines[index]!).trim()) return lines[index];
+		}
+		return lines[1];
+	}
+
 	override render(width: number): readonly string[] {
 		const lines = super.render(width);
 		if (lines.length === 0) {
