@@ -1,5 +1,5 @@
 import { CHARM_HYPER_API_BASE_URL, normalizeCharmHyperBaseUrl } from "../wire/charm-hyper";
-import { CODEX_CLIENT_VERSION } from "../wire/codex";
+import { CODEX_CLIENT_VERSION, isOfficialCodexApiUrl } from "../wire/codex";
 import { PERSONAL_GITHUB_COPILOT_BASE_URL } from "../wire/github-copilot";
 import {
 	SINGULARITYAPI_DEV_API_BASE_URL,
@@ -69,9 +69,16 @@ export function resolveOllamaModelCacheProviderId(providerId: string, baseUrl?: 
 /** Resolve the cache namespace used by a provider's model-manager options without constructing those options. */
 export function resolveModelCacheProviderId(providerId: string, options: ModelCacheProviderIdOptions = {}): string {
 	switch (providerId) {
-		case "openai-codex":
-			// The backend filters the roster by client version.
-			return `${providerId}:${CODEX_CLIENT_VERSION}`;
+		case "openai-codex": {
+			// The backend filters the roster by client version. Discovery is
+			// authoritative, so a Codex-compatible gateway gets its own namespace;
+			// otherwise switching endpoints serves the previous host's roster for
+			// the full TTL.
+			const namespace = `${providerId}:${CODEX_CLIENT_VERSION}`;
+			const { baseUrl } = options;
+			if (!baseUrl || isOfficialCodexApiUrl(baseUrl)) return namespace;
+			return `${namespace}:${Bun.hash(baseUrl.trim().replace(/\/+$/, "")).toString(36)}`;
+		}
 		case "ollama":
 			return resolveOllamaModelCacheProviderId(providerId, options.baseUrl);
 		case "cursor":

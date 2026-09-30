@@ -6,6 +6,10 @@
 
 - `AuthStorage.keys.setConfig(provider, value, { fallback: true })` registers a key that is used only when no stored OAuth or `/login` credential exists, instead of overriding them; `removeConfig`/`clearConfig` also clear these fallbacks ([#13815](https://github.com/can1357/oh-my-pi/pull/13815) by [@H4vC](https://github.com/H4vC))
 
+### Removed
+
+- `isOfficialCodexApiUrl` is no longer exported from `@oh-my-pi/pi-ai`; import it from `@oh-my-pi/pi-catalog/wire/codex` ([#13830](https://github.com/can1357/oh-my-pi/issues/13830))
+
 ## [18.4.4] - 2026-09-29
 
 ### Added

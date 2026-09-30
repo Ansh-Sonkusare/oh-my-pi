@@ -3,6 +3,27 @@
  */
 
 export const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
+const OFFICIAL_CODEX_URL = new URL(CODEX_BASE_URL);
+
+/**
+ * Strict official-Codex endpoint check; exact origin or a path boundary after
+ * {@link CODEX_BASE_URL}. A missing base URL means the official default.
+ * Gates official-backend behavior (zstd bodies, leaked-thinking healing) and
+ * keeps ChatGPT OAuth tokens off, and gateway keys away from, the wrong host.
+ */
+export function isOfficialCodexApiUrl(baseUrl: string | undefined): boolean {
+	if (!baseUrl) return true;
+	try {
+		const candidate = new URL(baseUrl);
+		const candidatePath = candidate.pathname.replace(/\/+$/, "");
+		return (
+			candidate.origin === OFFICIAL_CODEX_URL.origin &&
+			(candidatePath === OFFICIAL_CODEX_URL.pathname || candidatePath.startsWith(`${OFFICIAL_CODEX_URL.pathname}/`))
+		);
+	} catch {
+		return false;
+	}
+}
 
 /**
  * Pinned OpenAI Codex client version (corresponds to @openai/codex package version).

@@ -517,6 +517,118 @@ describe("ModelRegistry runtime discovery", () => {
 		expect(registry.find("openai-codex", "runtime-codex-model")).toBeDefined();
 	});
 
+	test("Codex discovery follows the configured provider baseUrl and its API key", async () => {
+		writeRawModelsJson({
+			"openai-codex": { baseUrl: "https://codex-proxy.example/backend-api", apiKey: "sk-gateway" },
+		});
+		const requests: { url: string; authorization: string | null }[] = [];
+		const fetchMock: FetchImpl = async (input, init) => {
+			const url = String(input);
+			requests.push({ url, authorization: new Headers(init?.headers).get("Authorization") });
+			if (url.startsWith("https://codex-proxy.example/backend-api/codex/models")) {
+				return Response.json({
+					models: [
+						{
+							slug: "gpt-6.1-sol",
+							display_name: "GPT-6.1 Sol",
+							context_window: 272_000,
+							supported_in_api: true,
+							input_modalities: ["text", "image"],
+						},
+					],
+				});
+			}
+			return new Response("unauthorized", { status: 401 });
+		};
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+
+		await registry.refreshProvider("openai-codex", "online");
+
+		expect(requests.map(request => new URL(request.url).host)).toEqual(["codex-proxy.example"]);
+		expect(requests[0]?.authorization).toBe("Bearer sk-gateway");
+		expect(registry.find("openai-codex", "gpt-6.1-sol")?.baseUrl).toBe("https://codex-proxy.example/backend-api");
+	});
+
+	test("Codex discovery never sends stored OAuth accounts to a custom endpoint", async () => {
+		await authStorage.credentials.set("openai-codex", {
+			type: "oauth",
+			access: "official-codex-oauth",
+			refresh: "refresh-official",
+			expires: Date.now() + 3_600_000,
+		});
+		writeRawModelsJson({
+			"openai-codex": { baseUrl: "https://codex-proxy.example/backend-api", apiKey: "sk-gateway" },
+		});
+		const authorizations: (string | null)[] = [];
+		const fetchMock: FetchImpl = async (input, init) => {
+			const url = String(input);
+			if (!url.startsWith("https://codex-proxy.example/")) throw new Error(`Unexpected URL: ${url}`);
+			authorizations.push(new Headers(init?.headers).get("Authorization"));
+			return Response.json({
+				models: [{ slug: "gpt-6.1-sol", context_window: 272_000, supported_in_api: true }],
+			});
+		};
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+
+		await registry.refreshProvider("openai-codex", "online");
+
+		expect(authorizations).toEqual(["Bearer sk-gateway"]);
+		expect(registry.find("openai-codex", "gpt-6.1-sol")).toBeDefined();
+	});
+
+	test("Codex discovery refuses to send a ChatGPT OAuth token to a custom endpoint", async () => {
+		await authStorage.credentials.set("openai-codex", {
+			type: "oauth",
+			access: "official-codex-oauth",
+			refresh: "refresh-official",
+			expires: Date.now() + 3_600_000,
+		});
+		writeRawModelsJson({ "openai-codex": { baseUrl: "https://codex-proxy.example/backend-api" } });
+		const urls: string[] = [];
+		const fetchMock: FetchImpl = async input => {
+			urls.push(String(input));
+			return Response.json({ models: [{ slug: "gpt-6.1-sol", context_window: 272_000, supported_in_api: true }] });
+		};
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+
+		await registry.refreshProvider("openai-codex", "online");
+
+		expect(urls).toEqual([]);
+		expect(getModelsForProvider(registry, "openai-codex").length).toBeGreaterThan(0);
+	});
+
+	test("Codex discovery refetches when the configured endpoint changes despite a fresh official cache", async () => {
+		await authStorage.credentials.set("openai-codex", {
+			type: "oauth",
+			access: "official-codex-oauth",
+			refresh: "refresh-official",
+			expires: Date.now() + 3_600_000,
+		});
+		const codexModels = (slug: string) =>
+			Response.json({ models: [{ slug, context_window: 272_000, supported_in_api: true }] });
+		const official = new ModelRegistry(authStorage, modelsJsonPath, {
+			fetch: async () => codexModels("official-only-model"),
+		});
+		await official.refreshProvider("openai-codex", "online");
+		expect(official.find("openai-codex", "official-only-model")).toBeDefined();
+
+		writeRawModelsJson({
+			"openai-codex": { baseUrl: "https://codex-proxy.example/backend-api", apiKey: "sk-gateway" },
+		});
+		const gatewayUrls: string[] = [];
+		const gateway = new ModelRegistry(authStorage, modelsJsonPath, {
+			fetch: async input => {
+				gatewayUrls.push(String(input));
+				return codexModels("gpt-6.1-sol");
+			},
+		});
+		await gateway.refreshProvider("openai-codex", "online-if-uncached");
+
+		expect(gatewayUrls.map(url => new URL(url).host)).toEqual(["codex-proxy.example"]);
+		expect(gateway.find("openai-codex", "gpt-6.1-sol")).toBeDefined();
+		expect(gateway.find("openai-codex", "official-only-model")).toBeUndefined();
+	});
+
 	test("Codex discovery aborts (keeps bundled models) when any account credential fails to refresh", async () => {
 		// Two configured Codex accounts: the fresh one resolves, the expired one's
 		// refresh throws so getOAuthAccesses reports ok:false. A partial union would

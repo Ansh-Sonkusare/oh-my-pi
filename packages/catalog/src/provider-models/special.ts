@@ -17,9 +17,9 @@ import { resolveModelCacheProviderId } from "./cache-provider-id";
 // OpenAI Codex
 // ---------------------------------------------------------------------------
 
-/** One Codex OAuth account to fetch a catalog for. */
+/** One Codex account to fetch a catalog for. */
 export interface OpenAICodexAccount {
-	/** OAuth access token used for `Authorization: Bearer ...`. */
+	/** OAuth access token (official backend) or gateway API key, sent as `Authorization: Bearer ...`. */
 	accessToken: string;
 	/** ChatGPT account id sent as the `chatgpt-account-id` header. */
 	accountId?: string;
@@ -40,6 +40,12 @@ export interface OpenAICodexModelManagerConfig {
 	 * keeps the previous/bundled catalog instead.
 	 */
 	resolveAccounts?: () => Promise<readonly OpenAICodexAccount[] | null>;
+	/**
+	 * Codex backend base URL (models.yml `baseUrl`). Defaults to the official
+	 * ChatGPT backend; a Codex-compatible gateway also gets its own cache
+	 * namespace. Callers must resolve accounts appropriate to this endpoint.
+	 */
+	baseUrl?: string;
 	clientVersion?: string;
 	fetch?: FetchImpl;
 }
@@ -47,10 +53,10 @@ export interface OpenAICodexModelManagerConfig {
 export function openaiCodexModelManagerOptions(
 	config: OpenAICodexModelManagerConfig = {},
 ): ModelManagerOptions<"openai-codex-responses"> {
-	const { resolveAccounts, clientVersion, fetch } = config;
+	const { resolveAccounts, baseUrl, clientVersion, fetch } = config;
 	return {
 		providerId: "openai-codex",
-		cacheProviderId: resolveModelCacheProviderId("openai-codex"),
+		cacheProviderId: resolveModelCacheProviderId("openai-codex", { baseUrl }),
 		dynamicModelsAuthoritative: true,
 		...(resolveAccounts
 			? {
@@ -63,6 +69,7 @@ export function openaiCodexModelManagerOptions(
 								result: await fetchCodexModels({
 									accessToken: account.accessToken,
 									accountId: account.accountId,
+									baseUrl,
 									clientVersion,
 									fetchFn: fetch,
 								}),

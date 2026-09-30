@@ -7,6 +7,7 @@ import {
 	CODEX_CLIENT_VERSION,
 	codexRoutingHint,
 	getCodexAccountId,
+	isOfficialCodexApiUrl,
 	OPENAI_HEADER_VALUES,
 	OPENAI_HEADERS,
 } from "@oh-my-pi/pi-catalog/wire/codex";
@@ -23,7 +24,7 @@ import {
 	USER_AGENT,
 } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
-import { getEnvApiKey, isOfficialCodexApiUrl } from "../stream";
+import { getEnvApiKey } from "../stream";
 import type {
 	Api,
 	AssistantMessage,

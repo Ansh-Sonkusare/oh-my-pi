@@ -5,6 +5,7 @@ import {
 	type OpenAICodexAccount,
 	PROVIDER_DESCRIPTORS,
 } from "@oh-my-pi/pi-catalog/provider-models";
+import { isOfficialCodexApiUrl } from "@oh-my-pi/pi-catalog/wire/codex";
 import type { AuthStorage, OAuthCredential } from "../session/auth-storage";
 
 /**
@@ -140,10 +141,18 @@ export function getOAuthCredentialsForProvider(authStorage: AuthStorage, provide
 }
 
 /**
- * Resolve every configured Codex OAuth account for catalog discovery, refreshing
- * each credential exactly once. Codex `/models` is account-scoped, so discovery
- * must fetch per account and union the results; resolving a single access token
- * (as before) hid models available only through a sibling account (#6265).
+ * Resolve the Codex accounts to authenticate catalog discovery against
+ * {@link baseUrl}, refreshing each OAuth credential exactly once.
+ *
+ * Official backend: Codex `/models` is account-scoped, so discovery fetches per
+ * stored OAuth account and unions the results; resolving a single access token
+ * hid models available only through a sibling account (#6265). The resolved
+ * token is appended when it belongs to no stored account (e.g. a runtime key).
+ *
+ * Custom endpoint (models.yml `baseUrl` on a Codex-compatible gateway): only the
+ * provider's resolved key is used, matching what chat sends there. Stored
+ * ChatGPT OAuth tokens never leave the official backend — the same rule Codex
+ * web search enforces — so a resolved key that is one of them yields `null`.
  *
  * Returns `null` when any stored account fails to resolve (e.g. a transient
  * refresh failure): the Codex manager is authoritative, so unioning only the
@@ -154,7 +163,14 @@ export function getOAuthCredentialsForProvider(authStorage: AuthStorage, provide
 export async function resolveCodexDiscoveryAccounts(
 	authStorage: AuthStorage,
 	resolvedAccessToken: string,
+	baseUrl: string | undefined,
 ): Promise<OpenAICodexAccount[] | null> {
+	if (!isOfficialCodexApiUrl(baseUrl)) {
+		const isOAuthToken = getOAuthCredentialsForProvider(authStorage, "openai-codex").some(
+			credential => credential.access === resolvedAccessToken,
+		);
+		return isOAuthToken ? null : [{ accessToken: resolvedAccessToken }];
+	}
 	const accesses = await authStorage.oauth.accessAll("openai-codex");
 	const accounts: OpenAICodexAccount[] = [];
 	for (const access of accesses) {

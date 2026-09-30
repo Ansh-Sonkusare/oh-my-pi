@@ -2088,11 +2088,14 @@ export class ModelRegistry {
 				providerId: "openai-codex",
 				authoritative: true,
 				resolveKey: value => value,
-				createOptions: accessToken =>
-					openaiCodexModelManagerOptions({
-						resolveAccounts: () => resolveCodexDiscoveryAccounts(this.authStorage, accessToken),
+				createOptions: accessToken => {
+					const baseUrl = this.#descriptorBaseUrl("openai-codex");
+					return openaiCodexModelManagerOptions({
+						resolveAccounts: () => resolveCodexDiscoveryAccounts(this.authStorage, accessToken, baseUrl),
+						baseUrl,
 						fetch: this.#fetch,
-					}),
+					});
+				},
 			},
 		];
 		const disabledProviders = getDisabledProviderIdsFromSettings(this.#settings);
