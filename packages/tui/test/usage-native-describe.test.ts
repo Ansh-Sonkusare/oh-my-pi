@@ -88,6 +88,10 @@ describe("UsageDashboardComponent.describe", () => {
 			expect.objectContaining({ value: 1, tone: "error" }),
 			expect.objectContaining({ value: 0.9, tone: "warning" }),
 		]);
+		expect(findAll(fallback, n => n.k === "text" && n.p?.role === "omp.usage.pct").map(n => n.p?.spans)).toEqual([
+			[{ t: "140% used", s: "error" }],
+			[{ t: "90% used", s: "warning" }],
+		]);
 	});
 
 	it("switches to the per-account detail table when the Details tab is selected", () => {
@@ -103,8 +107,8 @@ describe("UsageDashboardComponent.describe", () => {
 		expect(tabs?.p).toEqual(expect.objectContaining({ active: "detail" }));
 		// One row per account in the detail table, not the bucket mean.
 		const table = findAll(detail, n => n.k === "table")[0];
-		const left = table?.k === "table" ? table.p?.rows.map(row => row.cells.left) : undefined;
-		expect(left).toEqual([[{ t: "75% left" }], [{ t: "25% left", s: "warning" }]]);
+		const used = table?.k === "table" ? table.p?.rows.map(row => row.cells.used) : undefined;
+		expect(used).toEqual([[{ t: "25% used" }], [{ t: "75% used", s: "warning" }]]);
 	});
 
 	it("re-fetches reports from the Refresh button like the r key", async () => {

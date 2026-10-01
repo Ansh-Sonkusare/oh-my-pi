@@ -1997,9 +1997,8 @@ function formatAggregateAmount(limits: UsageLimit[]): string {
 		.map(limit => resolveUsedFraction(limit))
 		.filter((value): value is number => value !== undefined);
 	if (fractions.length === limits.length && fractions.length > 0) {
-		const sum = fractions.reduce((total, value) => total + value, 0);
-		const avgRemaining = Math.max(0, ((limits.length - sum) / limits.length) * 100);
-		return `${formatNumber(avgRemaining)}% free`;
+		const averageUsed = (fractions.reduce((total, value) => total + value, 0) / limits.length) * 100;
+		return `${formatNumber(Math.max(0, averageUsed))}% used`;
 	}
 
 	const amounts = limits
@@ -2008,8 +2007,8 @@ function formatAggregateAmount(limits: UsageLimit[]): string {
 	if (amounts.length === limits.length && amounts.length > 0) {
 		const totalUsed = amounts.reduce((sum, amount) => sum + (amount.used ?? 0), 0);
 		const totalLimit = amounts.reduce((sum, amount) => sum + (amount.limit ?? 0), 0);
-		const remainingPct = totalLimit > 0 ? Math.max(0, 100 - (totalUsed / totalLimit) * 100) : 0;
-		return `${formatNumber(remainingPct)}% free`;
+		const usedPct = totalLimit > 0 ? Math.max(0, (totalUsed / totalLimit) * 100) : 0;
+		return `${formatNumber(usedPct)}% used`;
 	}
 
 	if (limits.length > 0 && limits.every(isUsedOnlyAbsoluteAmount)) return "";

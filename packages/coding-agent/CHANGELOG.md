@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the interactive `/usage` detail report showing remaining quota while its bar showed quota used; percentages now read `N% used` ([#13971](https://github.com/can1357/oh-my-pi/issues/13971)).
+
 ## [18.4.6] - 2026-10-01
 
 ### Added

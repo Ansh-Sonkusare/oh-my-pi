@@ -85,8 +85,8 @@ describe("buildProviderCards", () => {
 	const now = Date.now();
 
 	it("averages a window across accounts instead of showing the worst account", () => {
-		// One exhausted + one barely-used account: the classic report shows the
-		// aggregate (~50% free), so the card must not read 0% free.
+		// One exhausted + one barely-used account: the report shows the
+		// aggregate (~50% used), not either account's individual usage.
 		const reports = [
 			report("anthropic", "a@x.test", [limit("anthropic", "a", "7d", "Claude 7 Day", 1.0, "exhausted", now + 1000)]),
 			report("anthropic", "b@x.test", [limit("anthropic", "b", "7d", "Claude 7 Day", 0.0, "ok", now + 99_000)]),
@@ -291,8 +291,8 @@ describe("UsageDashboardComponent", () => {
 					expect(bars[0][0].length).toBeGreaterThanOrEqual(12);
 					for (const bar of bars) expect(bar[0].length).toBe(bars[0][0].length);
 				}
-				expect(quotaLines[0]).toContain("10% left");
-				expect(quotaLines[1]).toContain("84% left");
+				expect(quotaLines[0]).toContain("90% used");
+				expect(quotaLines[1]).toContain("16% used");
 				for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 			}
 		} finally {
@@ -398,8 +398,8 @@ describe("UsageDashboardComponent", () => {
 				const output = Bun.stripANSI(lines.join("\n"));
 				expect(output).toContain("Claude 7 Day (Fable)");
 				expect(output).toContain("Claude Extra Usage");
-				expect(output).toContain("84% left");
-				expect(output).toContain("95% left");
+				expect(output).toContain("16% used");
+				expect(output).toContain("5% used");
 				for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 			}
 		} finally {

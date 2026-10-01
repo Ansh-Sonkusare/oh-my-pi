@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed the `/usage` dashboard grid showing an unlabeled remaining percentage beside a used-quota bar; it now reads `N% left` ([#13971](https://github.com/can1357/oh-my-pi/issues/13971))
+- Fixed the `/usage` dashboard grid showing an unlabeled remaining percentage beside a used-quota bar; dashboard percentages now show quota used, matching their bars and `omp usage` ([#13971](https://github.com/can1357/oh-my-pi/issues/13971))
 
 ## [18.4.8] - 2026-10-01
 

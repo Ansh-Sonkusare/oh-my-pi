@@ -145,7 +145,7 @@ function compactWindowTag(window: NonNullable<UsageLimit["window"]>): string {
 /**
  * Collapse usage reports into one compact card per provider: limits grouped by
  * quota bucket (label + window), each bucket showing the mean used fraction
- * across accounts (matching the classic report's aggregate "% free") with the
+ * across accounts (matching the classic report's aggregate "% used") with the
  * most-used account's reset countdown. Cards sort most-pressing first so
  * what's burning is on top-left; fully idle providers collapse into a tick.
  */
@@ -401,9 +401,9 @@ function usageMeter(fraction: number, status: UsageLimit["status"], meter: boole
 	return meter ? node("meter", { value, style: "bar", size: "md", tone }) : node("progress", { value, tone, grow: 1 });
 }
 
-/** `62% left` for a used fraction (overage reads as 0%). */
-function leftText(fraction: number): string {
-	return `${Math.max(0, Math.round((1 - fraction) * 100))}% left`;
+/** Rounded quota usage percentage; overage remains visible beyond a full bar. */
+function usedPercentText(fraction: number): string {
+	return `${Math.max(0, Math.round(fraction * 100))}% used`;
 }
 
 /** `Mon 28 Sep` for a local date. */
@@ -521,8 +521,8 @@ const CARD_GUTTER = 3;
 const CARD_MAX_WINDOWS = 4;
 const CARD_MIN_BAR_WIDTH = 12;
 const CARD_MAX_LABEL_LINES = 2;
-/** Column width of the right-aligned quota suffix: the widest `100% left` plus a gap after the bar. */
-const CARD_PCT_WIDTH = leftText(0).length + 1;
+/** Column width of the right-aligned quota suffix: the widest in-range value plus a bar gap. */
+const CARD_PCT_WIDTH = usedPercentText(1).length + 1;
 
 interface CardRowLayout {
 	labelWidth: number;
@@ -698,7 +698,10 @@ export class UsageDashboardComponent implements Component {
 				for (const line of wrapTextWithAnsi(`${prefix}${text}`, contentWidth)) lines.push(`  ${line}`);
 				continue;
 			}
-			const pctText = theme.fg(this.#statusColor(window.status), leftText(window.fraction).padStart(CARD_PCT_WIDTH));
+			const pctText = theme.fg(
+				this.#statusColor(window.status),
+				usedPercentText(window.fraction).padStart(CARD_PCT_WIDTH),
+			);
 			const resetPlain = window.resetMs !== undefined ? formatDuration(window.resetMs) : "";
 			const resetText = resetWidth > 0 ? ` ${theme.fg("dim", resetPlain.padStart(resetWidth))}` : "";
 			for (const line of wrapTextWithAnsi(
@@ -1106,7 +1109,7 @@ export class UsageDashboardComponent implements Component {
 						window.status === "exhausted" ? "error" : window.status === "warning" ? "warning" : undefined;
 					cells.push(
 						usageMeter(window.fraction, window.status, meter),
-						text([span(leftText(window.fraction), token)], { role: "omp.usage.pct" }),
+						text([span(usedPercentText(window.fraction), token)], { role: "omp.usage.pct" }),
 					);
 					if (window.resetMs !== undefined) {
 						const reset = resetLabel(this.#nowMs, window.resetMs);
@@ -1272,10 +1275,10 @@ export class UsageDashboardComponent implements Component {
 					const resetsAt = limit.window?.resetsAt;
 					bucket.rows.push({
 						account: [span(reportAccountLabel(report, limit, index), "muted")],
-						left:
+						used:
 							fraction === undefined
 								? [span(formatAbsoluteOnlyAmount([limit]) ?? "No data", "muted")]
-								: [span(leftText(fraction), token)],
+								: [span(usedPercentText(fraction), token)],
 						reset:
 							resetsAt !== undefined && resetsAt > nowMs
 								? [
@@ -1303,7 +1306,7 @@ export class UsageDashboardComponent implements Component {
 				const cols: TspTableColumn[] = [
 					{ id: "limit", head: "Limit", grow: 1, priority: 4 },
 					{ id: "account", head: "Account", truncate: "middle", priority: 1 },
-					{ id: "left", head: "Left", align: "end", priority: 3 },
+					{ id: "used", head: "Used", align: "end", priority: 3 },
 					{ id: "reset", head: "Resets", align: "end", priority: 2 },
 				];
 				children.push(node("table", { cols, rows }, undefined, "limits"));
