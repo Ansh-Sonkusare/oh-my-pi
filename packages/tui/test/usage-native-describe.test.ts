@@ -88,10 +88,11 @@ describe("UsageDashboardComponent.describe", () => {
 			expect.objectContaining({ value: 1, tone: "error" }),
 			expect.objectContaining({ value: 0.9, tone: "warning" }),
 		]);
-		expect(findAll(fallback, n => n.k === "text" && n.p?.role === "omp.usage.pct").map(n => n.p?.spans)).toEqual([
-			[{ t: "140% used", s: "error" }],
-			[{ t: "90% used", s: "warning" }],
-		]);
+		expect(
+			findAll(fallback, n => n.k === "text" && n.p?.role === "omp.usage.pct").map(n =>
+				n.k === "text" ? n.p?.spans : undefined,
+			),
+		).toEqual([[{ t: "140% used", s: "error" }], [{ t: "90% used", s: "warning" }]]);
 	});
 
 	it("switches to the per-account detail table when the Details tab is selected", () => {
