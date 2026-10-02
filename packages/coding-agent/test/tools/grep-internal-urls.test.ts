@@ -257,6 +257,21 @@ describe("GrepTool internal URL resolution", () => {
 		expect(text).not.toContain("INFO");
 	});
 
+	it("searches every artifact in a `;`-separated artifact:// list", async () => {
+		await Bun.write(path.join(artifactsDir, "44.bash.log"), "first needle\n");
+		await Bun.write(path.join(artifactsDir, "43.bash.log"), "second needle\n");
+
+		const tool = new GrepTool(createSession());
+		const result = await tool.execute("artifact-list", {
+			pattern: "needle",
+			path: "artifact://44;artifact://43",
+		});
+
+		const text = getResultText(result);
+		expect(text).toContain("first needle");
+		expect(text).toContain("second needle");
+	});
+
 	it("searches virtual internal URL content without a backing file", async () => {
 		registerVirtualDocs(new Map([["doc.md", "alpha line\nneedle in virtual content\ngamma line\n"]]));
 

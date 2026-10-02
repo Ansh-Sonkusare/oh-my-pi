@@ -673,6 +673,10 @@ async function tryDelimitedPathSplit(
  * Split one path-like entry whose multiple targets were flattened into one
  * string. Existing paths are kept intact, so real filenames containing spaces,
  * commas, or semicolons win over delimiter recovery.
+ *
+ * A routed URL entry (`artifact://1;artifact://2`) splits on `;` only when
+ * every part is itself a routed URL; `routedUrlPredicate` defaults to the
+ * registered internal schemes, and `read` widens it to MCP resource URIs.
  */
 export async function splitDelimitedPathEntry(
 	entry: string,
@@ -685,9 +689,10 @@ export async function splitDelimitedPathEntry(
 	const normalizedEntry = normalizePathLikeInput(entry);
 	if (!hasTopLevelPathDelimiter(normalizedEntry)) return null;
 	const splitter = options.splitter ?? parseSearchPath;
-	if (options.routedUrlPredicate?.(normalizedEntry)) {
+	const routedUrlPredicate = options.routedUrlPredicate ?? isInternalUrlPath;
+	if (routedUrlPredicate(normalizedEntry)) {
 		const parts = await tryDelimitedPathSplit(normalizedEntry, cwd, splitter, "semicolon", "none");
-		return parts?.every(options.routedUrlPredicate) ? parts : null;
+		return parts?.every(routedUrlPredicate) ? parts : null;
 	}
 	if (isInternalUrlPath(normalizedEntry)) return null;
 	// A real POSIX file may contain a delimiter and a selector-shaped tail
