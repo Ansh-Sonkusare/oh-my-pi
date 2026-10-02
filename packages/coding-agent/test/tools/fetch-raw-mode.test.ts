@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
+import { GrepTool } from "@oh-my-pi/pi-coding-agent/tools/grep";
 import * as scrapers from "@oh-my-pi/pi-coding-agent/web/scrapers/types";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
@@ -38,6 +39,47 @@ function stubLoadPage(body: string, contentType: string) {
 		content: body,
 	}));
 }
+
+describe("grep HTTPS raw source", () => {
+	let testDir: string;
+	beforeEach(() => {
+		testDir = path.join(os.tmpdir(), `grep-raw-mode-${Snowflake.next()}`);
+		fs.mkdirSync(testDir, { recursive: true });
+	});
+	afterEach(() => {
+		vi.restoreAllMocks();
+		removeSyncWithRetries(testDir);
+	});
+
+	it("searches HTML source instead of rendered text with :raw", async () => {
+		stubLoadPage(
+			'<html>\n<head><meta name="needle" content="value"></head>\n<body>Visible</body>\n</html>',
+			"text/html",
+		);
+		const result = await new GrepTool(makeSession(testDir)).execute("source", {
+			pattern: "needle",
+			path: "https://example.com/page:raw",
+		});
+
+		expect(result.details?.matchCount).toBe(1);
+		expect(result.content.find(entry => entry.type === "text")?.text).toContain('<meta name="needle"');
+	});
+
+	it("filters matches to the selected raw source lines", async () => {
+		stubLoadPage(
+			'<html>\n<head><meta name="needle" content="value"></head>\n<body>Visible needle</body>\n</html>',
+			"text/html",
+		);
+		const result = await new GrepTool(makeSession(testDir)).execute("source-range", {
+			pattern: "needle",
+			path: "https://example.com/page:raw:2-2",
+		});
+
+		expect(result.details?.matchCount).toBe(1);
+		expect(result.content.find(entry => entry.type === "text")?.text).toContain('<meta name="needle"');
+		expect(result.content.find(entry => entry.type === "text")?.text).not.toContain("Visible needle");
+	});
+});
 
 describe("read URL with :raw selector (regression: JSON/feed parsers ignored raw flag)", () => {
 	let testDir: string;

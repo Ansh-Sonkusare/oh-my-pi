@@ -158,6 +158,20 @@ async function parsePathSpecs(rawEntries: readonly string[], cwd: string): Promi
 			specs.push({ original: entry, clean: internalSplit.path, ranges });
 			continue;
 		}
+		// External URLs carry their own read selectors. Keep the original URL for
+		// the fetcher so `:raw` selects the response body rather than rendered text.
+		const urlTarget = parseReadUrlTarget(entry);
+		if (urlTarget) {
+			if (urlTarget.sel.kind === "tail") {
+				throw new ToolError(`Tail selector requires read, not grep: ${entry}`);
+			}
+			specs.push({
+				original: entry,
+				clean: entry,
+				ranges: urlTarget.sel.kind === "lines" ? urlTarget.sel.ranges : undefined,
+			});
+			continue;
+		}
 		// Prefer a literal filesystem match when one exists — a real file named
 		// `test:1-2` outranks the `:1-2` selector interpretation (issue #4618).
 		const strictSplit = splitPathAndSel(entry);
