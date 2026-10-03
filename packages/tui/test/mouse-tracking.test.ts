@@ -134,6 +134,49 @@ describe("inline mouse tracking", () => {
 		}
 	});
 
+	it("releases fullscreen mouse capture after restoring the normal buffer", () => {
+		const enabled = { current: false };
+		const { terminal, tui } = makeInlineTui(enabled);
+		try {
+			tui.start();
+			const overlay = tui.showOverlay(new StaticOverlay(), { fullscreen: true });
+			tui.renderNow();
+			const enterAt = terminal.output.lastIndexOf(TRACKING_ON);
+
+			overlay.hide();
+			tui.renderNow();
+			const restoreAt = terminal.output.lastIndexOf("\x1b[?1049l");
+			const offAt = terminal.output.lastIndexOf(TRACKING_OFF);
+			expect(enterAt).toBeGreaterThan(-1);
+			expect(restoreAt).toBeGreaterThan(enterAt);
+			expect(offAt).toBeGreaterThan(restoreAt);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("releases fullscreen mouse capture after a fused normal-buffer restore", () => {
+		const enabled = { current: false };
+		const { terminal, tui } = makeInlineTui(enabled);
+		try {
+			tui.start();
+			const overlay = tui.showOverlay(new StaticOverlay(), { fullscreen: true });
+			tui.renderNow();
+			const enterAt = terminal.output.lastIndexOf(TRACKING_ON);
+
+			tui.requestRender(true, { clearScrollback: true });
+			overlay.hide();
+			tui.renderNow();
+			const restoreAt = terminal.output.lastIndexOf("\x1b[?1049l");
+			const offAt = terminal.output.lastIndexOf(TRACKING_OFF);
+			expect(enterAt).toBeGreaterThan(-1);
+			expect(restoreAt).toBeGreaterThan(enterAt);
+			expect(offAt).toBeGreaterThan(restoreAt);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("releases capture on stop even with a pending alt exit", () => {
 		const enabled = { current: true };
 		const { terminal, tui } = makeInlineTui(enabled);
