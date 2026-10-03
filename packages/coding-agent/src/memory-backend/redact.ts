@@ -142,8 +142,12 @@ function redactJwts(input: string): string {
 	return copied === 0 ? input : out + input.slice(copied);
 }
 
+const PRIVATE_KEY_BLOCK = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g;
+const BEARER_TOKEN = /\b(Bearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi;
+
 export function redactMemorySecrets(input: string): string {
-	let out = redactJwts(redactKeywordSecrets(input));
+	let out = input.replace(PRIVATE_KEY_BLOCK, "[REDACTED]").replace(BEARER_TOKEN, "$1[REDACTED]");
+	out = redactJwts(redactKeywordSecrets(out));
 	for (const pattern of PATTERNS) out = out.replace(pattern, "[REDACTED]");
 	return out;
 }

@@ -22,8 +22,11 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 	readonly approval = "read" as const;
 	readonly label = "Recall";
 	get description(): string {
+		const backend = cfgMemoryBackend.get(this.session.settings);
 		return prompt.render(recallDescription, {
 			toolRefs: sessionMemoryToolRefs(this.session),
+			hasReflect: backend === "hindsight" || backend === "mnemopi",
+			hasMemoryEdit: backend === "mnemopi",
 		});
 	}
 	readonly parameters = memoryRecallSchema;

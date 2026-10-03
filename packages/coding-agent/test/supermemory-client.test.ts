@@ -36,6 +36,7 @@ function clientFor(...responses: Response[]): { client: SupermemoryClient; reque
 		apiKey: "sm_test_key",
 		apiUrl: "https://api.supermemory.test/",
 		fetch: fetchMock,
+		retryDelaysMs: [0, 0, 0, 0],
 	});
 	return { client, requests };
 }
@@ -270,5 +271,93 @@ describe("SupermemoryClient.forget", () => {
 
 		expect(error.status).toBe(404);
 		expect(error.message).toContain("/v3/documents/gone");
+	});
+
+	it("retries the document delete while the server answers 409 and succeeds once it clears", async () => {
+		const { client, requests } = clientFor(
+			jsonResponse({}, 404),
+			jsonResponse({ error: "Document is still processing" }, 409),
+			jsonResponse({ error: "Document is still processing" }, 409),
+			new Response(null, { status: 204 }),
+		);
+
+		await client.forget("doc_1", "omp_user_abc");
+
+		const documentDelete = {
+			method: "DELETE",
+			url: "https://api.supermemory.test/v3/documents/doc_1",
+			headers: AUTH_HEADERS,
+			body: undefined,
+		};
+		expect(requests).toEqual([
+			{
+				method: "DELETE",
+				url: "https://api.supermemory.test/v4/memories",
+				headers: AUTH_HEADERS,
+				body: { id: "doc_1", containerTag: "omp_user_abc" },
+			},
+			documentDelete,
+			documentDelete,
+			documentDelete,
+		]);
+	});
+
+	it("throws the 409 after five attempts", async () => {
+		const processing = () => jsonResponse({ error: "Document is still processing" }, 409);
+		const { client, requests } = clientFor(
+			jsonResponse({}, 404),
+			processing(),
+			processing(),
+			processing(),
+			processing(),
+			processing(),
+		);
+
+		const error = await failureOf(client.forget("doc_1", "omp_user_abc"));
+
+		expect(error.status).toBe(409);
+		expect(requests.map(r => r.url)).toEqual([
+			"https://api.supermemory.test/v4/memories",
+			"https://api.supermemory.test/v3/documents/doc_1",
+			"https://api.supermemory.test/v3/documents/doc_1",
+			"https://api.supermemory.test/v3/documents/doc_1",
+			"https://api.supermemory.test/v3/documents/doc_1",
+			"https://api.supermemory.test/v3/documents/doc_1",
+		]);
+	});
+
+	it("does not retry a 500 from the document delete", async () => {
+		const { client, requests } = clientFor(jsonResponse({}, 404), jsonResponse({ error: "boom" }, 500));
+
+		const error = await failureOf(client.forget("doc_1", "omp_user_abc"));
+
+		expect(error.status).toBe(500);
+		expect(requests.map(r => r.url)).toEqual([
+			"https://api.supermemory.test/v4/memories",
+			"https://api.supermemory.test/v3/documents/doc_1",
+		]);
+	});
+
+	it("abort cancels the backoff wait", async () => {
+		let calls = 0;
+		const controller = new AbortController();
+		const client = new SupermemoryClient({
+			apiKey: "sm_test_key",
+			apiUrl: "https://api.supermemory.test",
+			retryDelaysMs: [60_000],
+			fetch: Object.assign(
+				async () => {
+					calls++;
+					controller.abort(new Error("stop"));
+					return jsonResponse({ error: "Document is still processing" }, 409);
+				},
+				{ preconnect: globalThis.fetch.preconnect },
+			),
+		});
+
+		const error = await client.forget("doc_1", "omp_user_abc", controller.signal).catch(e => e);
+
+		expect(error.message).toBe("stop");
+		expect(calls).toBe(1);
 	});
 });

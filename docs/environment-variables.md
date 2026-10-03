@@ -518,6 +518,17 @@ are ignored.
 | `HINDSIGHT_RECALL_TIMEOUT_MS`      | `hindsight.recallTimeoutMs`     | Integer milliseconds; default `30000`                                             |
 | `HINDSIGHT_RETAIN_TIMEOUT_MS`      | `hindsight.retainTimeoutMs`     | Integer milliseconds; default `60000`                                             |
 
+### Supermemory memory backend
+
+Each environment variable overrides the corresponding `supermemory.*` setting, which in turn
+overrides its built-in default (precedence: environment variable, then setting, then default).
+A blank value is ignored. The backend is inactive without an API key.
+
+| Variable              | Setting overridden   | Accepted value / built-in default                      |
+| --------------------- | -------------------- | ------------------------------------------------------ |
+| `SUPERMEMORY_API_KEY` | `supermemory.apiKey` | Non-empty string; unset by default                     |
+| `SUPERMEMORY_API_URL` | `supermemory.apiUrl` | Non-empty string; default `https://api.supermemory.ai` |
+
 `PI_NO_PTY` is also set internally when CLI `--no-pty` is used.
 
 ---

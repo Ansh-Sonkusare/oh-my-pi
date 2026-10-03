@@ -24,6 +24,22 @@ describe("memory secret redaction", () => {
 		expect(redactMemorySecrets("version 1.2.3 released")).toBe("version 1.2.3 released");
 	});
 
+	it("redacts PEM private key blocks whole", () => {
+		const pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAx3\nabcDEF123+/=\n-----END RSA PRIVATE KEY-----";
+		expect(redactMemorySecrets(`key:\n${pem}\nafter`)).toBe("key:\n[REDACTED]\nafter");
+		expect(redactMemorySecrets("-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----")).toBe("[REDACTED]");
+	});
+
+	it("redacts Bearer tokens but keeps the prefix", () => {
+		expect(redactMemorySecrets("Authorization: Bearer abcDEF123456789xyz_-.~+/=")).toBe(
+			"Authorization: Bearer [REDACTED]",
+		);
+		expect(redactMemorySecrets("curl -H 'Bearer a1b2c3d4e5f6g7h8i9' x")).toBe("curl -H 'Bearer [REDACTED]' x");
+		expect(redactMemorySecrets("the Bearer scheme is short: Bearer abc")).toBe(
+			"the Bearer scheme is short: Bearer abc",
+		);
+	});
+
 	it("leaves ordinary identifiers alone", () => {
 		for (const identifier of [
 			"passwordAuthenticationMiddleware",

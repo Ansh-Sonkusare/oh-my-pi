@@ -4,6 +4,7 @@
  */
 import { isTimeoutError, withTimeoutSignal } from "../utils/fetch-timeout";
 
+const DEFAULT_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
 const DEFAULT_TIMEOUT_MS = 15_000;
 
 export interface SupermemoryHit {
@@ -23,6 +24,24 @@ export class SupermemoryError extends Error {
 		this.name = "SupermemoryError";
 		this.status = status;
 	}
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+	const { promise, resolve, reject } = Promise.withResolvers<void>();
+	if (signal?.aborted) {
+		reject(signal.reason);
+		return promise;
+	}
+	const onAbort = () => {
+		clearTimeout(timer);
+		reject(signal!.reason);
+	};
+	const timer = setTimeout(() => {
+		signal?.removeEventListener("abort", onAbort);
+		resolve();
+	}, ms);
+	signal?.addEventListener("abort", onAbort, { once: true });
+	return promise;
 }
 
 interface SearchResponse {
@@ -45,12 +64,20 @@ export class SupermemoryClient {
 	readonly #apiUrl: string;
 	readonly #fetch: typeof fetch | undefined;
 	readonly #timeoutMs: number;
+	readonly #retryDelaysMs: number[];
 
-	constructor(opts: { apiKey: string; apiUrl: string; fetch?: typeof fetch; timeoutMs?: number }) {
+	constructor(opts: {
+		apiKey: string;
+		apiUrl: string;
+		fetch?: typeof fetch;
+		timeoutMs?: number;
+		retryDelaysMs?: number[];
+	}) {
 		this.#apiKey = opts.apiKey;
 		this.#apiUrl = opts.apiUrl.replace(/\/+$/, "");
 		this.#fetch = opts.fetch;
 		this.#timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+		this.#retryDelaysMs = opts.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
 	}
 
 	/** Hybrid (memory + document chunk) search inside one container tag. */
@@ -101,13 +128,27 @@ export class SupermemoryClient {
 	/**
 	 * Delete a memory. Hybrid search also returns document chunks whose id is not a memory id:
 	 * the memory endpoint answers those with 404, so retry as a document delete.
+	 * A 409 means the server is still processing the document; the delete is retried with backoff.
 	 */
 	async forget(id: string, containerTag: string, signal?: AbortSignal): Promise<void> {
 		try {
-			await this.#request("DELETE", "/v4/memories", { id, containerTag }, signal);
+			await this.#deleteRetrying409("/v4/memories", { id, containerTag }, signal);
 		} catch (err) {
 			if (!(err instanceof SupermemoryError) || err.status !== 404) throw err;
-			await this.#request("DELETE", `/v3/documents/${encodeURIComponent(id)}`, undefined, signal);
+			await this.#deleteRetrying409(`/v3/documents/${encodeURIComponent(id)}`, undefined, signal);
+		}
+	}
+
+	async #deleteRetrying409(path: string, body: unknown, signal?: AbortSignal): Promise<void> {
+		for (let attempt = 0; ; attempt++) {
+			try {
+				await this.#request("DELETE", path, body, signal);
+				return;
+			} catch (err) {
+				if (!(err instanceof SupermemoryError) || err.status !== 409 || attempt >= this.#retryDelaysMs.length)
+					throw err;
+			}
+			await sleep(this.#retryDelaysMs[attempt]!, signal);
 		}
 	}
 
