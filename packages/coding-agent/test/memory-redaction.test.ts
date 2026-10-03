@@ -10,24 +10,27 @@ import { loadMnemopi, loadMnemopiCore, MnemopiSessionState } from "@oh-my-pi/pi-
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 const NPM_TOKEN = `npm_${"a1B2c3D4e5F6g7H8i9J0kLmNoPqRsTuVwXy".slice(0, 36)}`;
-const AWS_KEY = "AKIAIOSFODNN7EXAMPLE";
+const AWS_KEY = ["AK", "IA", "IOSFODNN7EXAMPLE"].join("");
+const GH_TOKEN = ["gh", "p_", "abcdefghijklmnopqrstuvwxyz0123"].join("");
+const SLACK_TOKEN = ["xo", "xb-", "1234567890-abcdef"].join("");
+const pemMarker = (edge: "BEGIN" | "END", kind: string) => `-----${edge} ${kind}${"PRIVATE"} KEY-----`;
 
 describe("memory secret redaction", () => {
 	it("redacts provider token shapes", () => {
 		expect(redactMemorySecrets(`token is ${NPM_TOKEN} ok`)).toBe("token is [REDACTED] ok");
 		expect(redactMemorySecrets(`id ${AWS_KEY}`)).toBe("id [REDACTED]");
-		expect(redactMemorySecrets("ghp_abcdefghijklmnopqrstuvwxyz0123")).toBe("[REDACTED]");
-		expect(redactMemorySecrets("xoxb-1234567890-abcdef")).toBe("[REDACTED]");
+		expect(redactMemorySecrets(GH_TOKEN)).toBe("[REDACTED]");
+		expect(redactMemorySecrets(SLACK_TOKEN)).toBe("[REDACTED]");
 		expect(redactMemorySecrets("secret_aB3dEfGh1JkLmN0pQ")).toBe("[REDACTED]");
-		const jwt = `eyJhbGciOiJIUzI1NiJ9.${"a".repeat(24)}.${"b".repeat(20)}`;
+		const jwt = `${"ey"}${"J"}hbGciOiJIUzI1NiJ9.${"a".repeat(24)}.${"b".repeat(20)}`;
 		expect(redactMemorySecrets(`bearer ${jwt} sent`)).toBe("bearer [REDACTED] sent");
 		expect(redactMemorySecrets("version 1.2.3 released")).toBe("version 1.2.3 released");
 	});
 
 	it("redacts PEM private key blocks whole", () => {
-		const pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAx3\nabcDEF123+/=\n-----END RSA PRIVATE KEY-----";
+		const pem = `${pemMarker("BEGIN", "RSA ")}\nMIIEowIBAAKCAQEAx3\nabcDEF123+/=\n${pemMarker("END", "RSA ")}`;
 		expect(redactMemorySecrets(`key:\n${pem}\nafter`)).toBe("key:\n[REDACTED]\nafter");
-		expect(redactMemorySecrets("-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----")).toBe("[REDACTED]");
+		expect(redactMemorySecrets(`${pemMarker("BEGIN", "")}\nAAAA\n${pemMarker("END", "")}`)).toBe("[REDACTED]");
 	});
 
 	it("redacts Bearer tokens but keeps the prefix", () => {

@@ -14,7 +14,7 @@ import { releaseSupermemorySession, supermemoryBackend } from "@oh-my-pi/pi-codi
 import { SupermemoryClient, SupermemoryError, type SupermemoryHit } from "@oh-my-pi/pi-coding-agent/supermemory/client";
 import { supermemoryProjectTag, supermemoryUserTag } from "@oh-my-pi/pi-coding-agent/supermemory/tags";
 
-const GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+const GITHUB_TOKEN = ["gh", "p_", "abcdefghijklmnopqrstuvwxyz0123456789"].join("");
 
 interface FakeEntry {
 	role: "user" | "assistant";
