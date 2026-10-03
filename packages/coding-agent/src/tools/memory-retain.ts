@@ -4,6 +4,8 @@ import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
 import retainDescription from "../prompts/tools/retain.md" with { type: "text" };
+import { supermemoryBackend } from "../supermemory/backend";
+import { isSupermemoryConfigured, loadSupermemoryConfig } from "../supermemory/settings";
 import type { ToolSession } from ".";
 
 import { cfgMemoryBackend } from "../memory-backend/settings";
@@ -56,8 +58,9 @@ export class MemoryRetainTool implements AgentTool<MemoryRetainSchema, MemoryRet
 
 	static createIf(session: ToolSession): MemoryRetainTool | null {
 		const backend = cfgMemoryBackend.get(session.settings);
-		if (backend !== "hindsight" && backend !== "mnemopi") return null;
+		if (backend !== "hindsight" && backend !== "mnemopi" && backend !== "supermemory") return null;
 		if (backend === "hindsight" && !isHindsightConfigured(loadHindsightConfig(session.settings))) return null;
+		if (backend === "supermemory" && !isSupermemoryConfigured(loadSupermemoryConfig(session.settings))) return null;
 		return new MemoryRetainTool(session);
 	}
 
@@ -112,6 +115,47 @@ export class MemoryRetainTool implements AgentTool<MemoryRetainSchema, MemoryRet
 					);
 				}
 				storedIds.push(id);
+			}
+
+			const count = params.items.length;
+			const noun = count === 1 ? "memory" : "memories";
+			return {
+				content: [{ type: "text", text: `${count} ${noun} stored.` }],
+				details: { count },
+			};
+		}
+
+		if (backend === "supermemory") {
+			if (params.items.some(item => item.scope === "global")) {
+				throw new Error("Global memory scope is only available with the Mnemopi backend.");
+			}
+			const context = {
+				agentDir: this.session.settings.getAgentDir(),
+				cwd: this.session.cwd,
+				settings: this.session.settings,
+			};
+			// A failed write stops the batch and reports what was kept, so a retry sends only what
+			// failed instead of duplicating items that already landed.
+			for (const [index, item] of params.items.entries()) {
+				try {
+					const result = await supermemoryBackend.save?.(context, {
+						content: item.content,
+						context: item.context,
+						source: "coding-agent-retain",
+					});
+					if (!result || result.stored === 0) throw new Error(result?.message ?? "nothing was stored");
+				} catch (error) {
+					const reason = error instanceof Error ? error.message : String(error);
+					const kept =
+						index === 0
+							? "Nothing was stored."
+							: `${index} earlier ${index === 1 ? "item was" : "items were"} stored and kept.`;
+					const untried = index + 1 < params.items.length ? " Later items were not attempted." : "";
+					throw new Error(
+						`Supermemory did not store item ${index + 1} of ${params.items.length}: ${reason}. ${kept}${untried}`,
+						{ cause: error },
+					);
+				}
 			}
 
 			const count = params.items.length;

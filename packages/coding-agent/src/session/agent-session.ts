@@ -201,6 +201,7 @@ import {
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import { cfgSecretsEnabled } from "../secrets/settings";
 import { releaseSharpshooterSession } from "../sharpshooter/backend";
+import { releaseSupermemorySession } from "../supermemory/backend";
 import { flushSharpshooterExtraction } from "../sharpshooter/extract";
 import { toolReadsSkillUris } from "../system-prompt";
 import {
@@ -5377,6 +5378,11 @@ export class AgentSession implements SettingsScope {
 			releaseSharpshooterSession(this);
 		} catch (error) {
 			logger.warn("Session dispose: Sharpshooter release failed", { error: String(error) });
+		}
+		try {
+			releaseSupermemorySession(this);
+		} catch (error) {
+			logger.warn("Session dispose: Supermemory release failed", { error: String(error) });
 		}
 		const advisorRecorderClosed = this.#advisors.recorderClosed();
 		releaseShellSessions(this.sessionManager.getSessionId());

@@ -6,20 +6,21 @@ import { register } from "../config/registry";
 
 // Memory backend selector — picks between local memories pipeline,
 // Mnemopi local SQLite, Hindsight remote memory, Sharpshooter project
-// decisions, or off. The legacy
+// decisions, Supermemory cloud memory, or off. The legacy
 // `memories.enabled` flag is migration input only; see config/settings.ts.
 // Protocol hosts (RPC/ACP) start with memory off: embedders opt in through their own settings layer.
 export const cfgMemoryBackend = register({
 	id: "memory.backend",
 	protocolDefault: ["rpc", "acp"],
 	type: "enum",
-	values: ["off", "local", "hindsight", "mnemopi", "sharpshooter"] as const,
+	values: ["off", "local", "hindsight", "mnemopi", "sharpshooter", "supermemory"] as const,
 	default: "off",
 	ui: {
 		tab: "memory",
 		group: "General",
 		label: "Memory Backend",
-		description: "Off, local summary pipeline, Mnemopi SQLite, Hindsight remote memory, or Sharpshooter",
+		description:
+			"Off, local summary pipeline, Mnemopi SQLite, Hindsight remote memory, Sharpshooter, or Supermemory cloud memory",
 		options: [
 			{ value: "off", label: "Off", description: "No memory subsystem runs" },
 			{ value: "local", label: "Local", description: "Local rollout summarisation pipeline (memory_summary.md)" },
@@ -34,6 +35,11 @@ export const cfgMemoryBackend = register({
 				label: "Sharpshooter",
 				description:
 					"Friction-gated project decision files (architecture/product/style), consolidated in the background",
+			},
+			{
+				value: "supermemory",
+				label: "Supermemory",
+				description: "Supermemory cloud memory: first-prompt recall and periodic retain",
 			},
 		],
 	},

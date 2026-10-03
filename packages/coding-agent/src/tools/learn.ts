@@ -6,6 +6,8 @@ import { isNameClaimedByAuthoredSkill } from "../extensibility/skills";
 import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
 import { localBackend } from "../memory-backend/local-backend";
 import learnDescription from "../prompts/tools/learn.md" with { type: "text" };
+import { supermemoryBackend } from "../supermemory/backend";
+import { isSupermemoryConfigured, loadSupermemoryConfig } from "../supermemory/settings";
 import type { ToolSession } from ".";
 
 import { cfgAutolearnEnabled } from "../autolearn/settings";
@@ -43,7 +45,7 @@ export type LearnParams = typeof learnSchemaWithScope.infer;
  * Orchestrating "learn" tool: persists a lesson to long-term memory and,
  * given a `skill` payload, mints/enhances a managed skill via the shared
  * `writeManagedSkill` primitive. Gated behind `autolearn.enabled` plus a live
- * memory backend — `hindsight`/`mnemopi` (remote/SQLite) or `local` (the
+ * memory backend — `hindsight`/`mnemopi`/`supermemory` (remote/SQLite) or `local` (the
  * file-based rollout backend, where lessons append to `learned.md`).
  */
 export class LearnTool implements AgentTool<LearnSchema> {
@@ -71,8 +73,9 @@ export class LearnTool implements AgentTool<LearnSchema> {
 	static createIf(session: ToolSession): LearnTool | null {
 		if (!cfgAutolearnEnabled.get(session.settings)) return null;
 		const backend = cfgMemoryBackend.get(session.settings);
-		if (backend !== "hindsight" && backend !== "mnemopi" && backend !== "local") return null;
+		if (!["hindsight", "mnemopi", "supermemory", "local"].includes(backend)) return null;
 		if (backend === "hindsight" && !isHindsightConfigured(loadHindsightConfig(session.settings))) return null;
+		if (backend === "supermemory" && !isSupermemoryConfigured(loadSupermemoryConfig(session.settings))) return null;
 		return new LearnTool(session);
 	}
 
@@ -124,6 +127,14 @@ export class LearnTool implements AgentTool<LearnSchema> {
 			);
 			if (!result || result.stored === 0) {
 				throw new Error("Lesson was empty after sanitization; nothing stored.");
+			}
+		} else if (backend === "supermemory") {
+			const result = await supermemoryBackend.save?.(
+				{ agentDir: this.session.settings.getAgentDir(), cwd: this.session.cwd, settings: this.session.settings },
+				{ content: params.memory, context: params.context, source: "coding-agent-learn" },
+			);
+			if (!result || result.stored === 0) {
+				throw new Error(`Supermemory did not store the lesson: ${result?.message ?? "nothing was stored"}.`);
 			}
 		} else {
 			const state = this.session.getHindsightSessionState?.();

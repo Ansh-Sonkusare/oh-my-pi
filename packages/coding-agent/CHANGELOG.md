@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a native Supermemory memory backend (`memory.backend: supermemory`): the first prompt recalls your profile plus user and project memories, the session transcript is retained every few turns, and `recall`, `retain`, and `learn` are available; configure with `supermemory.apiKey` / `SUPERMEMORY_API_KEY` and, for a self-hosted server, `supermemory.apiUrl` / `SUPERMEMORY_API_URL`
+
 ## [18.6.0] - 2026-10-03
 
 ### Added

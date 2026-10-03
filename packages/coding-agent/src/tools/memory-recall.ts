@@ -5,6 +5,8 @@ import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config"
 import { formatCurrentTime, formatMemories } from "../hindsight/content";
 import recallDescription from "../prompts/tools/recall.md" with { type: "text" };
 import { sessionMemoryToolRefs } from "../memory-backend/tool-names";
+import { supermemoryBackend } from "../supermemory/backend";
+import { isSupermemoryConfigured, loadSupermemoryConfig } from "../supermemory/settings";
 import type { ToolSession } from ".";
 
 import { cfgMemoryBackend } from "../memory-backend/settings";
@@ -33,8 +35,9 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 
 	static createIf(session: ToolSession): MemoryRecallTool | null {
 		const backend = cfgMemoryBackend.get(session.settings);
-		if (backend !== "hindsight" && backend !== "mnemopi") return null;
+		if (backend !== "hindsight" && backend !== "mnemopi" && backend !== "supermemory") return null;
 		if (backend === "hindsight" && !isHindsightConfigured(loadHindsightConfig(session.settings))) return null;
+		if (backend === "supermemory" && !isSupermemoryConfigured(loadSupermemoryConfig(session.settings))) return null;
 		return new MemoryRecallTool(session);
 	}
 
@@ -67,6 +70,47 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 					};
 				} catch (err) {
 					logger.warn("recall failed", { backend: "mnemopi", bank: state.config.bank, error: String(err) });
+					throw err instanceof Error ? err : new Error(String(err));
+				}
+			}
+
+			if (backend === "supermemory") {
+				try {
+					const result = await supermemoryBackend.search?.(
+						{
+							agentDir: this.session.settings.getAgentDir(),
+							cwd: this.session.cwd,
+							settings: this.session.settings,
+						},
+						params.query,
+						{ signal },
+					);
+					if (!result || result.items.length === 0) {
+						return {
+							content: [{ type: "text", text: result?.message ?? "No relevant memories found." }],
+							details: {},
+							useless: true,
+						};
+					}
+					const formatted = result.items
+						.map(item => {
+							const scope = item.source ? `[${item.source}] ` : "";
+							const id = item.id ? `${item.id}: ` : "";
+							const score = item.score === undefined ? "" : ` (similarity ${item.score.toFixed(2)})`;
+							return `- ${scope}${id}${item.content}${score}`;
+						})
+						.join("\n");
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Found ${result.items.length} relevant ${result.items.length === 1 ? "memory" : "memories"} (as of ${formatCurrentTime()} UTC):\n\n${formatted}`,
+							},
+						],
+						details: {},
+					};
+				} catch (err) {
+					logger.warn("recall failed", { backend: "supermemory", error: String(err) });
 					throw err instanceof Error ? err : new Error(String(err));
 				}
 			}

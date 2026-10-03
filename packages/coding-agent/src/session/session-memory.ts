@@ -10,6 +10,7 @@ import { resolveMemoryBackend } from "../memory-backend/resolve";
 import type { MemoryBackendStartOptions } from "../memory-backend/types";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import { releaseSharpshooterSession } from "../sharpshooter/backend";
+import { releaseSupermemorySession } from "../supermemory/backend";
 
 import { cfgMemoryBackend } from "../memory-backend/settings";
 
@@ -265,6 +266,11 @@ export class SessionMemory {
 			releaseSharpshooterSession(this.#host.memoryBackendSession());
 		} catch (error) {
 			logger.warn("Memory lifecycle: Sharpshooter dispose failed", { error: String(error) });
+		}
+		try {
+			releaseSupermemorySession(this.#host.memoryBackendSession());
+		} catch (error) {
+			logger.warn("Memory lifecycle: Supermemory dispose failed", { error: String(error) });
 		}
 		const hindsight = this.#host.getHindsightSessionState();
 		if (hindsight) {
