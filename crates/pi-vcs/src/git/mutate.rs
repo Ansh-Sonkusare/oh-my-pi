@@ -296,7 +296,7 @@ impl GitRepo {
 	pub fn checkout(&self, rev: &str) -> Result<()> {
 		let repo = self.gix()?;
 		let (target, symbolic) = resolve_checkout_target(&repo, rev)?;
-		checkout_tree(self, &repo, target, false)?;
+		checkout_tree(self, &repo, target, CheckoutMode::Normal)?;
 		write_head(self.info().head_path.as_path(), symbolic.as_deref(), target)?;
 		Ok(())
 	}
@@ -411,7 +411,7 @@ impl GitRepo {
 		let repo = self.gix()?;
 		let id = resolve_commit(&repo, target.unwrap_or("HEAD"))?;
 		if mode == ResetMode::Hard {
-			checkout_tree(self, &repo, id, true)?;
+			checkout_tree(self, &repo, id, CheckoutMode::HardReset)?;
 		} else if mode == ResetMode::Mixed {
 			self.read_tree(&id.to_hex().to_string(), None)?;
 		}
@@ -628,7 +628,7 @@ impl GitRepo {
 		let admin = register_worktree(path, &self.info().common_dir, &head)?;
 		let linked = Self::require(path)?;
 		let linked_repo = linked.gix()?;
-		if let Err(err) = checkout_tree(&linked, &linked_repo, id, true) {
+		if let Err(err) = checkout_tree(&linked, &linked_repo, id, CheckoutMode::DisposableWorktree) {
 			cleanup_worktree_add(path, &self.info().common_dir).map_err(|cleanup| {
 				Error::backend("git worktree add", format!("{err}; cleanup failed: {cleanup}"))
 			})?;
@@ -1403,11 +1403,17 @@ fn resolve_checkout_target(
 	Ok((resolve_commit(repo, branch.as_deref().unwrap_or(rev))?, branch))
 }
 
+enum CheckoutMode {
+	Normal,
+	HardReset,
+	DisposableWorktree,
+}
+
 fn checkout_tree(
 	owner: &GitRepo,
 	repo: &gix::Repository,
 	commit: gix::hash::ObjectId,
-	overwrite: bool,
+	mode: CheckoutMode,
 ) -> Result<()> {
 	let tree = commit_tree(repo, &commit)?;
 	let mut target = repo
@@ -1415,7 +1421,7 @@ fn checkout_tree(
 		.map_err(|e| Error::backend("git checkout", e))?;
 	let current = load_index_or_head(repo, "git checkout")?;
 	let conflicts = checkout_conflicts(owner.root(), repo, &current, &target)?;
-	if !overwrite && !conflicts.is_empty() {
+	if matches!(mode, CheckoutMode::Normal) && !conflicts.is_empty() {
 		return Err(Error::Conflict { paths: conflicts });
 	}
 	let mut collisions = Vec::new();
@@ -1448,7 +1454,7 @@ fn checkout_tree(
 		.checkout_options(gix::worktree::stack::state::attributes::Source::IdMapping)
 		.map_err(|e| Error::backend("git checkout", e))?;
 	opts.overwrite_existing = true;
-	opts.keep_going = true;
+	opts.keep_going = matches!(mode, CheckoutMode::DisposableWorktree);
 	let progress = gix::progress::Discard;
 	let interrupt = std::sync::atomic::AtomicBool::new(false);
 	let outcome = gix::worktree::state::checkout(
@@ -1465,7 +1471,9 @@ fn checkout_tree(
 		opts,
 	)
 	.map_err(|e| Error::backend("git checkout", e))?;
-	check_checkout_outcome(owner.root(), &outcome, "git checkout")?;
+	if matches!(mode, CheckoutMode::DisposableWorktree) {
+		check_checkout_outcome(owner.root(), &outcome, "git checkout")?;
+	}
 	target
 		.write(INDEX_WRITE)
 		.map_err(|e| Error::backend("git checkout", e))
@@ -2387,6 +2395,37 @@ mod tests {
 		repo.reset(ResetMode::Hard, Some(&main)).unwrap();
 		assert!(repo.delete_branch("other", true).unwrap());
 		assert!(!repo.delete_branch("missing", true).unwrap());
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn checkout_and_hard_reset_stop_on_unwritable_target() {
+		use std::os::unix::fs::PermissionsExt;
+
+		for hard_reset in [false, true] {
+			let (temp, repo) = fixture();
+			git(temp.path(), &["checkout", "-qb", "target"]);
+			fs::create_dir(temp.path().join("a-blocked")).unwrap();
+			fs::write(temp.path().join("a-blocked/file"), "blocked\n").unwrap();
+			fs::write(temp.path().join("z-later"), "should not appear\n").unwrap();
+			git(temp.path(), &["add", "-A"]);
+			git(temp.path(), &["commit", "-qm", "target"]);
+			git(temp.path(), &["checkout", "-q", "main"]);
+			fs::create_dir(temp.path().join("a-blocked")).unwrap();
+			fs::set_permissions(temp.path().join("a-blocked"), fs::Permissions::from_mode(0o555))
+				.unwrap();
+
+			let result = if hard_reset {
+				repo.reset(ResetMode::Hard, Some("target"))
+			} else {
+				repo.checkout("target")
+			};
+			fs::set_permissions(temp.path().join("a-blocked"), fs::Permissions::from_mode(0o755))
+				.unwrap();
+			assert!(result.is_err(), "unwritable target must fail checkout");
+			assert!(!temp.path().join("z-later").exists(), "checkout must stop at the first error");
+			assert_eq!(git(temp.path(), &["symbolic-ref", "--short", "HEAD"]), "main");
+		}
 	}
 
 	#[test]
