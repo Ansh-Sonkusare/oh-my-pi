@@ -2265,19 +2265,29 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 			});
 		}
 
+		let file_params = if output_mode == OutputMode::Content {
+			per_file_params(params)
+		} else {
+			params
+		};
+
 		let path_string = search_path.to_string_lossy().into_owned();
-		let search = match stream {
+		let mut search = match stream {
 			Some(sink) if output_mode == OutputMode::Content => run_streaming_search_slice(
-				&mut build_searcher_for_params(params),
+				&mut build_searcher_for_params(file_params),
 				matcher,
 				bytes.as_slice(),
-				params,
+				file_params,
 				sink,
 				&path_string,
 			)?,
-			_ => run_search(matcher, bytes.as_slice(), params),
+			_ => run_search(matcher, bytes.as_slice(), file_params),
 		}
 		.map_err(|err| Error::from_reason(format!("Search failed: {err}")))?;
+		if output_mode == OutputMode::Content && offset > 0 {
+			let skipped = search.matches.len().min(offset as usize);
+			search.matches.drain(..skipped);
+		}
 
 		if search.match_count == 0 {
 			return Ok(GrepResult {
@@ -3283,6 +3293,50 @@ mod tests {
 		assert_eq!(result.matches.len(), 1);
 		assert_eq!(result.matches[0].path, "code.txt");
 		assert_eq!(result.matches[0].line_number, 1);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn grep_single_file_obeys_per_file_match_cap() {
+		let root = TempDirGuard::new();
+		let path = root.path().join("hot.txt");
+		write_file(&path, &"needle line\n".repeat(250));
+
+		let mut config = base_grep_config(&path);
+		config.max_count = Some(201);
+		config.max_count_per_file = Some(1);
+		let result = grep_sync(config, None, task::CancelToken::default())
+			.expect("single-file grep should succeed");
+		assert_eq!(result.matches.len(), 1);
+		assert_eq!(result.total_matches, 2);
+		assert_eq!(result.limit_reached, Some(true));
+
+		let mut paged = base_grep_config(&path);
+		paged.offset = Some(1);
+		paged.max_count = Some(2);
+		paged.max_count_per_file = Some(2);
+		let single = grep_sync(paged, None, task::CancelToken::default())
+			.expect("paged single-file grep should succeed");
+		let mut walked = base_grep_config(root.path());
+		walked.offset = Some(1);
+		walked.max_count = Some(2);
+		walked.max_count_per_file = Some(2);
+		let directory = grep_sync(walked, None, task::CancelToken::default())
+			.expect("paged directory grep should succeed");
+		assert_eq!(single.matches.len(), 1);
+		assert_eq!(single.matches[0].line_number, 2);
+		assert_eq!(single.total_matches, directory.total_matches);
+		assert_eq!(single.matches.len(), directory.matches.len());
+
+		let sink = std::sync::Arc::new(RecordingSink::default());
+		let mut streaming = base_grep_config(&path);
+		streaming.max_count_per_file = Some(1);
+		streaming.stream = Some(sink.clone());
+		let result = grep_sync(streaming, None, task::CancelToken::default())
+			.expect("single-file streaming grep should succeed");
+		assert_eq!(sink.batches.lock().iter().map(Vec::len).sum::<usize>(), 1);
+		assert_eq!(result.total_matches, 2);
+		assert_eq!(result.limit_reached, Some(true));
 	}
 
 	#[cfg(unix)]

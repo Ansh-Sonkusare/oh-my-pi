@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed native `grep` ignoring `maxCountPerFile` when searching a single file path.
+
 ## [18.5.0] - 2026-10-03
 
 ### Fixed
