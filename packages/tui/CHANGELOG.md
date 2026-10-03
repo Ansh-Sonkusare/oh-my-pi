@@ -2,10 +2,6 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- Fixed mouse movement entering the composer and blocking native selection after closing a fullscreen overlay ([#14217](https://github.com/can1357/oh-my-pi/issues/14217)).
-
 ## [18.5.1] - 2026-10-03
 
 ### Added
